@@ -658,11 +658,11 @@ struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
     let heatmapCounts: [String: Int]
 
-    private let defaultDistance: CLLocationDistance = 170
+    private let defaultDistance: CLLocationDistance = 180
     private let minDistance: CLLocationDistance = 130
-    private let maxDistance: CLLocationDistance = 520
-    private let boundaryDistance: CLLocationDistance = 700
-    private let heatmapThresholdDistance: CLLocationDistance = 260
+    private let maxDistance: CLLocationDistance = 650
+    private let boundaryDistance: CLLocationDistance = 820
+    private let heatmapThresholdDistance: CLLocationDistance = 280
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -675,9 +675,8 @@ struct GridMapView: UIViewRepresentable {
         map.isZoomEnabled = true
         map.mapType = .satellite
         map.userTrackingMode = .none
-        let anchoredCenter = Self.cellCenterCoordinate(for: center)
-        map.setRegion(MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance), animated: false)
-        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
+        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance), animated: false)
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
         map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: minDistance, maxCenterCoordinateDistance: maxDistance)
         context.coordinator.parent = self
         return map
@@ -685,10 +684,9 @@ struct GridMapView: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
-        let anchoredCenter = Self.cellCenterCoordinate(for: center)
-        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
-        context.coordinator.syncCamera(on: mapView, userCenter: anchoredCenter, defaultDistance: defaultDistance)
-        context.coordinator.refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: heatmapCounts)
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
+        context.coordinator.syncCamera(on: mapView, userCenter: center, defaultDistance: defaultDistance)
+        context.coordinator.refreshOverlays(on: mapView, center: center, heatmapCounts: heatmapCounts)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
