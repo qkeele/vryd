@@ -1,10 +1,12 @@
 import Foundation
+import CoreLocation
 
 protocol VrydBackend {
     func signInWithApple() async throws -> UserProfile
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage]
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage]
+    func fetchDailyCellCounts(near coordinate: CLLocationCoordinate2D, radiusMeters: Double, date: Date) async throws -> [String: Int]
     func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage
     func like(messageID: UUID, by userID: UUID) async throws
     func delete(messageID: UUID, by userID: UUID) async throws
@@ -108,6 +110,31 @@ actor LiveVrydBackend: VrydBackend {
                     userHasLiked: record.likedBy.contains(userID)
                 )
             }
+    }
+
+
+    func fetchDailyCellCounts(near coordinate: CLLocationCoordinate2D, radiusMeters: Double, date: Date) async throws -> [String: Int] {
+        let dayKey = GridCell(coordinate: coordinate, date: date).dateKey
+        let center = SpatialGrid.cellIndices(for: coordinate)
+        let radiusCells = max(1, Int(ceil(radiusMeters / SpatialGrid.cellSizeMeters)))
+        var result: [String: Int] = [:]
+
+        for message in messages {
+            let parts = message.gridCellID.split(separator: "_")
+            guard parts.count == 2,
+                  String(parts[1]) == dayKey,
+                  let indices = SpatialGrid.parseCellID(String(parts[0])) else {
+                continue
+            }
+
+            let dx = abs(indices.x - center.x)
+            let dy = abs(indices.y - center.y)
+            guard dx <= radiusCells, dy <= radiusCells else { continue }
+            let key = SpatialGrid.cellID(x: indices.x, y: indices.y)
+            result[key, default: 0] += 1
+        }
+
+        return result
     }
 
     func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage {

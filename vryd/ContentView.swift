@@ -26,6 +26,7 @@ final class AppViewModel: ObservableObject {
     @Published var profileMessages: [ChatMessage] = []
     @Published var draftMessage = ""
     @Published var replyTo: ChatMessage?
+    @Published var heatmapCounts: [String: Int] = [:]
 
     let backend: VrydBackend
     let locationManager = LocationManager()
@@ -39,6 +40,7 @@ final class AppViewModel: ObservableObject {
                 self?.locationState = .ready
                 self?.screen = .main
                 await self?.refreshGridData()
+                await self?.refreshHeatmapData()
             }
         }
         locationManager.onDenied = { [weak self] in
@@ -101,6 +103,7 @@ final class AppViewModel: ObservableObject {
             replyTo = nil
             await refreshGridData()
             await refreshProfile()
+            await refreshHeatmapData()
         } catch {
             statusMessage = "Could not send comment."
         }
@@ -111,6 +114,7 @@ final class AppViewModel: ObservableObject {
         do {
             try await backend.like(messageID: message.id, by: user.id)
             await refreshGridData()
+            await refreshHeatmapData()
         } catch {
             statusMessage = "Could not like comment."
         }
@@ -122,6 +126,7 @@ final class AppViewModel: ObservableObject {
             try await backend.delete(messageID: message.id, by: user.id)
             await refreshGridData()
             await refreshProfile()
+            await refreshHeatmapData()
         } catch {
             statusMessage = "Could not delete comment."
         }
@@ -136,6 +141,7 @@ final class AppViewModel: ObservableObject {
             draftMessage = ""
             gridMessages = []
             profileMessages = []
+            heatmapCounts = [:]
             screen = .signIn
             statusMessage = "Account deleted."
         } catch {
@@ -160,10 +166,20 @@ final class AppViewModel: ObservableObject {
             statusMessage = "Could not load profile comments."
         }
     }
+
+    func refreshHeatmapData() async {
+        guard let coordinate = currentCoordinate else { return }
+        do {
+            heatmapCounts = try await backend.fetchDailyCellCounts(near: coordinate, radiusMeters: 2_500, date: .now)
+        } catch {
+            statusMessage = "Could not load heatmap data."
+        }
+    }
 }
 
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
+    private var lastDeliveredCellID: String?
     var onLocation: ((CLLocationCoordinate2D) -> Void)?
     var onDenied: (() -> Void)?
 
@@ -171,6 +187,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = 15
     }
 
     func requestAuthorizationAndStart() {
@@ -193,6 +210,9 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
+        let cellID = SpatialGrid.cellID(for: location.coordinate)
+        guard lastDeliveredCellID != cellID else { return }
+        lastDeliveredCellID = cellID
         onLocation?(location.coordinate)
     }
 }
@@ -220,7 +240,7 @@ struct ContentView: View {
     private var mapScreen: some View {
         ZStack(alignment: .bottom) {
             if let coordinate = viewModel.currentCoordinate {
-                GridMapView(center: coordinate)
+                GridMapView(center: coordinate, heatmapCounts: viewModel.heatmapCounts)
                     .ignoresSafeArea()
             }
 
@@ -241,10 +261,8 @@ struct ContentView: View {
                     .padding(.bottom, 26)
             }
         }
-        .sheet(isPresented: $showingGridChat) {
+        .fullScreenCover(isPresented: $showingGridChat) {
             GridChatSheet(viewModel: viewModel)
-                .presentationDetents([.fraction(0.38), .large])
-                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showingProfile) {
             ProfileView(viewModel: viewModel)
@@ -349,13 +367,14 @@ struct LocationPromptView: View {
 
 struct EdgeFadeOverlay: View {
     var body: some View {
-        HStack {
-            LinearGradient(colors: [Color.white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
-                .frame(width: 42)
+        VStack {
+            LinearGradient(colors: [Color.white.opacity(0.9), .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 88)
             Spacer()
-            LinearGradient(colors: [.clear, Color.white.opacity(0.55)], startPoint: .leading, endPoint: .trailing)
-                .frame(width: 42)
+            LinearGradient(colors: [.clear, Color.white.opacity(0.9)], startPoint: .top, endPoint: .bottom)
+                .frame(height: 88)
         }
+        .allowsHitTesting(false)
     }
 }
 
@@ -367,92 +386,113 @@ struct FloatingCircleButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.primary)
-                .frame(width: 56, height: 56)
-                .background(.ultraThinMaterial)
+                .foregroundStyle(.black)
+                .frame(width: 58, height: 58)
+                .background(Color.white)
                 .clipShape(Circle())
         }
-        .shadow(radius: 8)
+        .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
     }
 }
 
 struct GridChatSheet: View {
     @ObservedObject var viewModel: AppViewModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack {
-                Text("Grid \(SpatialGrid.cellID(for: viewModel.currentCoordinate ?? CLLocationCoordinate2D()))")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal)
-
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(viewModel.topLevelMessages) { message in
-                        VStack(alignment: .leading, spacing: 8) {
-                            CommentCard(
-                                message: message,
-                                canDelete: viewModel.activeUser?.id == message.authorID,
-                                likeAction: { Task { await viewModel.like(message) } },
-                                replyAction: {
-                                    viewModel.replyTo = message
-                                    viewModel.draftMessage = "@\(message.author) "
-                                },
-                                deleteAction: { Task { await viewModel.delete(message) } }
-                            )
-
-                            ForEach(viewModel.replies(for: message.id)) { reply in
+        NavigationStack {
+            VStack(spacing: 12) {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(viewModel.topLevelMessages) { message in
+                            VStack(alignment: .leading, spacing: 8) {
                                 CommentCard(
-                                    message: reply,
-                                    canDelete: viewModel.activeUser?.id == reply.authorID,
-                                    likeAction: { Task { await viewModel.like(reply) } },
-                                    replyAction: {},
-                                    deleteAction: { Task { await viewModel.delete(reply) } }
+                                    message: message,
+                                    canDelete: viewModel.activeUser?.id == message.authorID,
+                                    likeAction: { Task { await viewModel.like(message) } },
+                                    replyAction: {
+                                        viewModel.replyTo = message
+                                        viewModel.draftMessage = "@\(message.author) "
+                                    },
+                                    deleteAction: { Task { await viewModel.delete(message) } }
                                 )
-                                .padding(.leading, 22)
+
+                                ForEach(viewModel.replies(for: message.id)) { reply in
+                                    CommentCard(
+                                        message: reply,
+                                        canDelete: viewModel.activeUser?.id == reply.authorID,
+                                        likeAction: { Task { await viewModel.like(reply) } },
+                                        replyAction: {},
+                                        deleteAction: { Task { await viewModel.delete(reply) } }
+                                    )
+                                    .padding(.leading, 18)
+                                }
                             }
                         }
-                    }
 
-                    if viewModel.gridMessages.isEmpty {
-                        Text("No comments in this square yet.")
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 16)
-                    }
-                }
-                .padding(.horizontal)
-            }
-
-            VStack(spacing: 6) {
-                if let reply = viewModel.replyTo {
-                    HStack {
-                        Text("Replying to @\(reply.author)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Cancel") {
-                            viewModel.replyTo = nil
-                            viewModel.draftMessage = ""
+                        if viewModel.gridMessages.isEmpty {
+                            Text("No comments in this square yet.")
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 16)
                         }
-                        .font(.caption)
                     }
-                    .padding(.horizontal)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                 }
 
-                HStack(spacing: 10) {
-                    TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(1...3)
-                    Button("Post") { Task { await viewModel.postMessage() } }
-                        .buttonStyle(.borderedProminent)
+                VStack(spacing: 8) {
+                    if let reply = viewModel.replyTo {
+                        HStack {
+                            Text("Replying to @\(reply.author)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("Cancel") {
+                                viewModel.replyTo = nil
+                                viewModel.draftMessage = ""
+                            }
+                            .font(.caption)
+                        }
+                        .padding(.horizontal)
+                    }
+
+                    HStack(spacing: 10) {
+                        TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
+                            .lineLimit(1...4)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(Color.white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        Button("Post") { Task { await viewModel.postMessage() } }
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .background(Color.black)
+                            .clipShape(Capsule())
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 10)
                 }
-                .padding(.horizontal)
+                .background(Color.white)
             }
-            .padding(.bottom, 10)
+            .background(Color.white)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                        .foregroundStyle(.black)
+                }
+            }
         }
-        .task { await viewModel.refreshGridData() }
+        .task {
+            await viewModel.refreshGridData()
+            await viewModel.refreshHeatmapData()
+        }
     }
 }
 
@@ -465,39 +505,45 @@ struct CommentCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("u/\(message.author)")
-                    .font(.subheadline.bold())
-                Spacer()
+            Text(message.text)
+                .foregroundStyle(.black)
+            HStack(spacing: 14) {
                 Text(message.createdAt.formatted(date: .omitted, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            Text(message.text)
-            HStack(spacing: 14) {
+
                 Button(action: likeAction) {
                     Label("\(message.likeCount)", systemImage: message.userHasLiked ? "heart.fill" : "heart")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(message.userHasLiked ? .pink : .secondary)
+                .foregroundStyle(.black)
                 .disabled(message.userHasLiked)
 
                 if message.parentID == nil {
                     Button("Reply", action: replyAction)
                         .font(.caption)
                         .buttonStyle(.plain)
+                        .foregroundStyle(.black)
                 }
 
+                Spacer()
+
                 if canDelete {
-                    Button("Delete", role: .destructive, action: deleteAction)
+                    Button("Delete", action: deleteAction)
                         .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.black)
                 }
             }
             .font(.caption)
         }
-        .padding(12)
-        .background(.gray.opacity(0.11))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .padding(14)
+        .background(Color.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.black.opacity(0.12), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 }
 
@@ -545,6 +591,7 @@ struct ProfileView: View {
 
 struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
+    let heatmapCounts: [String: Int]
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -554,52 +601,94 @@ struct GridMapView: UIViewRepresentable {
         map.isRotateEnabled = false
         map.isPitchEnabled = false
         map.isScrollEnabled = false
-        map.isZoomEnabled = false
-        map.mapType = .satellite
+        map.isZoomEnabled = true
+        map.mapType = .standard
+        map.userTrackingMode = .follow
+        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: 220, longitudinalMeters: 220), animated: false)
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 5_000, longitudinalMeters: 5_000))
+        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 120, maxCenterCoordinateDistance: 5_500)
         return map
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        let region = MKCoordinateRegion(center: center, latitudinalMeters: 150, longitudinalMeters: 150)
-        mapView.setRegion(region, animated: true)
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 5_000, longitudinalMeters: 5_000))
+        if mapView.userTrackingMode != .follow {
+            mapView.userTrackingMode = .follow
+        }
 
-        let overlays = context.coordinator.gridOverlays(active: center, radius: 2)
-        mapView.removeOverlays(mapView.overlays)
-        mapView.addOverlays(overlays)
+        let overlays = context.coordinator.overlays(
+            active: center,
+            visibleMeters: max(mapView.region.span.latitudeDelta * 111_000, 100),
+            heatmapCounts: heatmapCounts
+        )
+        context.coordinator.apply(overlays: overlays, to: mapView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
-        func gridOverlays(active coordinate: CLLocationCoordinate2D, radius: Int) -> [MKPolygon] {
-            let active = SpatialGrid.cellIndices(for: coordinate)
+        private var overlaySignature: String = ""
+
+        func overlays(active coordinate: CLLocationCoordinate2D, visibleMeters: Double, heatmapCounts: [String: Int]) -> [MKPolygon] {
+            let activeIndices = SpatialGrid.cellIndices(for: coordinate)
+            let showHeatmap = visibleMeters >= 1_200
+            let radius = showHeatmap ? 25 : 2
             var result: [MKPolygon] = []
 
-            for y in (active.y - radius)...(active.y + radius) {
-                for x in (active.x - radius)...(active.x + radius) {
+            for y in (activeIndices.y - radius)...(activeIndices.y + radius) {
+                for x in (activeIndices.x - radius)...(activeIndices.x + radius) {
                     let points = SpatialGrid.corners(forX: x, y: y)
-                    let polygon = MKPolygon(coordinates: points, count: points.count)
-                    polygon.title = (x == active.x && y == active.y) ? "active" : "grid"
+                    let polygon = HeatPolygon(coordinates: points, count: points.count)
+                    polygon.cellID = SpatialGrid.cellID(x: x, y: y)
+                    polygon.isActive = (x == activeIndices.x && y == activeIndices.y)
+                    if showHeatmap {
+                        polygon.intensity = heatmapCounts[polygon.cellID] ?? 0
+                    }
                     result.append(polygon)
                 }
             }
             return result
         }
 
+        func apply(overlays: [MKPolygon], to mapView: MKMapView) {
+            let signature = overlays.compactMap { ($0 as? HeatPolygon)?.signaturePart }.joined(separator: "|")
+            guard signature != overlaySignature else { return }
+            overlaySignature = signature
+            mapView.removeOverlays(mapView.overlays)
+            mapView.addOverlays(overlays)
+        }
+
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            guard let polygon = overlay as? MKPolygon else { return MKOverlayRenderer(overlay: overlay) }
+            guard let polygon = overlay as? HeatPolygon else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = MKPolygonRenderer(polygon: polygon)
-            if polygon.title == "active" {
-                renderer.fillColor = UIColor.systemBlue.withAlphaComponent(0.35)
-                renderer.strokeColor = UIColor.systemBlue
-                renderer.lineWidth = 2.5
+
+            if polygon.intensity > 0 {
+                let alpha = min(0.85, 0.14 + (Double(polygon.intensity) * 0.08))
+                renderer.fillColor = UIColor.black.withAlphaComponent(alpha)
+                renderer.strokeColor = UIColor.black.withAlphaComponent(0.35)
+                renderer.lineWidth = polygon.isActive ? 2.2 : 0.6
+            } else if polygon.isActive {
+                renderer.fillColor = UIColor.black.withAlphaComponent(0.2)
+                renderer.strokeColor = UIColor.black
+                renderer.lineWidth = 2.2
             } else {
                 renderer.fillColor = UIColor.clear
-                renderer.strokeColor = UIColor.white.withAlphaComponent(0.35)
-                renderer.lineWidth = 1
+                renderer.strokeColor = UIColor.black.withAlphaComponent(0.18)
+                renderer.lineWidth = 0.7
             }
+
             return renderer
         }
+    }
+}
+
+final class HeatPolygon: MKPolygon, @unchecked Sendable {
+    var cellID: String = ""
+    var intensity: Int = 0
+    var isActive: Bool = false
+
+    var signaturePart: String {
+        "\(cellID):\(intensity):\(isActive ? 1 : 0)"
     }
 }
 

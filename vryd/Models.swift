@@ -66,6 +66,20 @@ enum SpatialGrid {
         return (Int(floor(meters.x / cellSizeMeters)), Int(floor(meters.y / cellSizeMeters)))
     }
 
+    static func cellID(x: Int, y: Int) -> String {
+        "\(x):\(y)"
+    }
+
+    static func parseCellID(_ id: String) -> (x: Int, y: Int)? {
+        let parts = id.split(separator: ":")
+        guard parts.count == 2,
+              let x = Int(parts[0]),
+              let y = Int(parts[1]) else {
+            return nil
+        }
+        return (x, y)
+    }
+
     static func corners(forX x: Int, y: Int) -> [CLLocationCoordinate2D] {
         let minX = Double(x) * cellSizeMeters
         let minY = Double(y) * cellSizeMeters
