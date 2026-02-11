@@ -45,16 +45,16 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 let cellID = SpatialGrid.cellID(for: coordinate)
-                let shouldReloadForCell = lastLoadedCellID != cellID
+                let shouldReloadForCell = self.lastLoadedCellID != cellID
 
-                currentCoordinate = coordinate
-                locationState = .ready
-                screen = .main
+                self.currentCoordinate = coordinate
+                self.locationState = .ready
+                self.screen = .main
 
                 guard shouldReloadForCell else { return }
-                lastLoadedCellID = cellID
-                await refreshGridData()
-                await refreshHeatmapData()
+                self.lastLoadedCellID = cellID
+                await self.refreshGridData()
+                await self.refreshHeatmapData()
             }
         }
         locationManager.onDenied = { [weak self] in
@@ -658,10 +658,11 @@ struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
     let heatmapCounts: [String: Int]
 
-    private let defaultDistance: CLLocationDistance = 220
-    private let minDistance: CLLocationDistance = 150
-    private let maxDistance: CLLocationDistance = 1_800
-    private let heatmapThresholdDistance: CLLocationDistance = 320
+    private let defaultDistance: CLLocationDistance = 170
+    private let minDistance: CLLocationDistance = 130
+    private let maxDistance: CLLocationDistance = 520
+    private let boundaryDistance: CLLocationDistance = 700
+    private let heatmapThresholdDistance: CLLocationDistance = 260
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -670,12 +671,13 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = false
+        map.isScrollEnabled = true
         map.isZoomEnabled = true
         map.mapType = .satellite
-        map.userTrackingMode = .follow
-        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance), animated: false)
-        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
+        map.userTrackingMode = .none
+        let anchoredCenter = Self.cellCenterCoordinate(for: center)
+        map.setRegion(MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance), animated: false)
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
         map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: minDistance, maxCenterCoordinateDistance: maxDistance)
         context.coordinator.parent = self
         return map
@@ -683,26 +685,59 @@ struct GridMapView: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
-        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
-        if mapView.userTrackingMode != .follow {
-            mapView.userTrackingMode = .follow
-        }
-
-        mapView.setCenter(center, animated: false)
-
-        context.coordinator.refreshOverlays(on: mapView, center: center, heatmapCounts: heatmapCounts)
+        let anchoredCenter = Self.cellCenterCoordinate(for: center)
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: anchoredCenter, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
+        context.coordinator.syncCamera(on: mapView, userCenter: anchoredCenter, defaultDistance: defaultDistance)
+        context.coordinator.refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: heatmapCounts)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
+
+    private static func cellCenterCoordinate(for coordinate: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        let indices = SpatialGrid.cellIndices(for: coordinate)
+        let corners = SpatialGrid.corners(forX: indices.x, y: indices.y)
+        let latitude = corners.map(\.latitude).reduce(0, +) / Double(corners.count)
+        let longitude = corners.map(\.longitude).reduce(0, +) / Double(corners.count)
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate {
         var parent: GridMapView
         private var overlaySignature: String = ""
+        private var hasInitializedCamera = false
+        private var lastUserCenter: CLLocationCoordinate2D?
 
         init(parent: GridMapView) {
             self.parent = parent
         }
 
+
+        func syncCamera(on mapView: MKMapView, userCenter: CLLocationCoordinate2D, defaultDistance: CLLocationDistance) {
+            if !hasInitializedCamera {
+                let region = MKCoordinateRegion(center: userCenter, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance)
+                mapView.setRegion(region, animated: false)
+                hasInitializedCamera = true
+                self.lastUserCenter = userCenter
+                return
+            }
+
+            guard let previousUserCenter = self.lastUserCenter else {
+                self.lastUserCenter = userCenter
+                return
+            }
+
+            let movedDistance = MKMapPoint(userCenter).distance(to: MKMapPoint(previousUserCenter))
+            guard movedDistance >= 30 else { return }
+
+            self.lastUserCenter = userCenter
+
+            let region = mapView.region
+            let centerDistance = MKMapPoint(region.center).distance(to: MKMapPoint(userCenter))
+            if centerDistance > 240 {
+                mapView.setCenter(userCenter, animated: true)
+            }
+        }
 
         func refreshOverlays(on mapView: MKMapView, center: CLLocationCoordinate2D, heatmapCounts: [String: Int]) {
             let showHeatmap = mapView.camera.centerCoordinateDistance >= parent.heatmapThresholdDistance
@@ -712,7 +747,7 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let generationRadius = 5 // 11x11 generated grid
+            let generationRadius = 6 // 13x13 generated grid with hidden buffer
             let visibleMinOffset = -5
             let visibleMaxOffset = 4 // 10x10 visible interior
             var result: [MKPolygon] = []
@@ -743,7 +778,8 @@ struct GridMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            refreshOverlays(on: mapView, center: parent.center, heatmapCounts: parent.heatmapCounts)
+            let anchoredCenter = GridMapView.cellCenterCoordinate(for: parent.center)
+            refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: parent.heatmapCounts)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
