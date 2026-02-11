@@ -669,7 +669,7 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = true
+        map.isScrollEnabled = false
         map.isZoomEnabled = true
         map.mapType = .satellite
         map.userTrackingMode = .follow
