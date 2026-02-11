@@ -32,6 +32,7 @@ final class AppViewModel: ObservableObject {
     let backend: VrydBackend
     let locationManager = LocationManager()
     private(set) var activeUser: UserProfile?
+    private var lastLoadedCellID: String?
 
     var displayUsername: String {
         let trimmed = activeUser?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -42,11 +43,18 @@ final class AppViewModel: ObservableObject {
         self.backend = backend
         locationManager.onLocation = { [weak self] coordinate in
             Task { @MainActor in
-                self?.currentCoordinate = coordinate
-                self?.locationState = .ready
-                self?.screen = .main
-                await self?.refreshGridData()
-                await self?.refreshHeatmapData()
+                guard let self else { return }
+                let cellID = SpatialGrid.cellID(for: coordinate)
+                let shouldReloadForCell = lastLoadedCellID != cellID
+
+                currentCoordinate = coordinate
+                locationState = .ready
+                screen = .main
+
+                guard shouldReloadForCell else { return }
+                lastLoadedCellID = cellID
+                await refreshGridData()
+                await refreshHeatmapData()
             }
         }
         locationManager.onDenied = { [weak self] in
@@ -185,7 +193,6 @@ final class AppViewModel: ObservableObject {
 
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private var lastDeliveredCellID: String?
     var onLocation: ((CLLocationCoordinate2D) -> Void)?
     var onDenied: (() -> Void)?
 
@@ -216,9 +223,6 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        let cellID = SpatialGrid.cellID(for: location.coordinate)
-        guard lastDeliveredCellID != cellID else { return }
-        lastDeliveredCellID = cellID
         onLocation?(location.coordinate)
     }
 }
@@ -656,7 +660,7 @@ struct GridMapView: UIViewRepresentable {
 
     private let defaultDistance: CLLocationDistance = 220
     private let minDistance: CLLocationDistance = 150
-    private let maxDistance: CLLocationDistance = 520
+    private let maxDistance: CLLocationDistance = 1_800
     private let heatmapThresholdDistance: CLLocationDistance = 320
 
     func makeUIView(context: Context) -> MKMapView {
@@ -683,6 +687,8 @@ struct GridMapView: UIViewRepresentable {
         if mapView.userTrackingMode != .follow {
             mapView.userTrackingMode = .follow
         }
+
+        mapView.setCenter(center, animated: false)
 
         context.coordinator.refreshOverlays(on: mapView, center: center, heatmapCounts: heatmapCounts)
     }
