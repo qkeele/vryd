@@ -658,10 +658,11 @@ struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
     let heatmapCounts: [String: Int]
 
-    private let defaultDistance: CLLocationDistance = 220
-    private let minDistance: CLLocationDistance = 150
-    private let maxDistance: CLLocationDistance = 1_800
-    private let heatmapThresholdDistance: CLLocationDistance = 320
+    private let defaultDistance: CLLocationDistance = 180
+    private let minDistance: CLLocationDistance = 130
+    private let maxDistance: CLLocationDistance = 650
+    private let boundaryDistance: CLLocationDistance = 820
+    private let heatmapThresholdDistance: CLLocationDistance = 280
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -670,12 +671,12 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = false
+        map.isScrollEnabled = true
         map.isZoomEnabled = true
         map.mapType = .satellite
-        map.userTrackingMode = .follow
+        map.userTrackingMode = .none
         map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance), animated: false)
-        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
         map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: minDistance, maxCenterCoordinateDistance: maxDistance)
         context.coordinator.parent = self
         return map
@@ -683,13 +684,8 @@ struct GridMapView: UIViewRepresentable {
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
         context.coordinator.parent = self
-        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
-        if mapView.userTrackingMode != .follow {
-            mapView.userTrackingMode = .follow
-        }
-
-        mapView.setCenter(center, animated: false)
-
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: boundaryDistance, longitudinalMeters: boundaryDistance))
+        context.coordinator.syncCamera(on: mapView, userCenter: center, defaultDistance: defaultDistance)
         context.coordinator.refreshOverlays(on: mapView, center: center, heatmapCounts: heatmapCounts)
     }
 
@@ -698,11 +694,39 @@ struct GridMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate {
         var parent: GridMapView
         private var overlaySignature: String = ""
+        private var hasInitializedCamera = false
+        private var lastUserCenter: CLLocationCoordinate2D?
 
         init(parent: GridMapView) {
             self.parent = parent
         }
 
+
+        func syncCamera(on mapView: MKMapView, userCenter: CLLocationCoordinate2D, defaultDistance: CLLocationDistance) {
+            if !hasInitializedCamera {
+                let region = MKCoordinateRegion(center: userCenter, latitudinalMeters: defaultDistance, longitudinalMeters: defaultDistance)
+                mapView.setRegion(region, animated: false)
+                hasInitializedCamera = true
+                self.lastUserCenter = userCenter
+                return
+            }
+
+            guard let previousUserCenter = self.lastUserCenter else {
+                self.lastUserCenter = userCenter
+                return
+            }
+
+            let movedDistance = MKMapPoint(userCenter).distance(to: MKMapPoint(previousUserCenter))
+            guard movedDistance >= 30 else { return }
+
+            self.lastUserCenter = userCenter
+
+            let region = mapView.region
+            let centerDistance = MKMapPoint(region.center).distance(to: MKMapPoint(userCenter))
+            if centerDistance > 240 {
+                mapView.setCenter(userCenter, animated: true)
+            }
+        }
 
         func refreshOverlays(on mapView: MKMapView, center: CLLocationCoordinate2D, heatmapCounts: [String: Int]) {
             let showHeatmap = mapView.camera.centerCoordinateDistance >= parent.heatmapThresholdDistance
