@@ -45,16 +45,16 @@ final class AppViewModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 let cellID = SpatialGrid.cellID(for: coordinate)
-                let shouldReloadForCell = lastLoadedCellID != cellID
+                let shouldReloadForCell = self.lastLoadedCellID != cellID
 
-                currentCoordinate = coordinate
-                locationState = .ready
-                screen = .main
+                self.currentCoordinate = coordinate
+                self.locationState = .ready
+                self.screen = .main
 
                 guard shouldReloadForCell else { return }
-                lastLoadedCellID = cellID
-                await refreshGridData()
-                await refreshHeatmapData()
+                self.lastLoadedCellID = cellID
+                await self.refreshGridData()
+                await self.refreshHeatmapData()
             }
         }
         locationManager.onDenied = { [weak self] in
