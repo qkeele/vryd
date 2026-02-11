@@ -566,9 +566,6 @@ struct ProfileView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDeleteAccount = false
-    @State private var pushNotificationsEnabled = true
-    @State private var privateAccountEnabled = false
-    @State private var darkMapEnabled = true
 
     var body: some View {
         NavigationStack {
@@ -582,34 +579,7 @@ struct ProfileView: View {
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
-
-                        Spacer()
-
-                        Button(action: {}) {
-                            Image(systemName: "gearshape.fill")
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundStyle(.black)
-                                .frame(width: 38, height: 38)
-                                .background(Color.black.opacity(0.08))
-                                .clipShape(Circle())
-                        }
                     }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Settings")
-                            .font(.headline)
-
-                        Toggle("Push notifications", isOn: $pushNotificationsEnabled)
-                        Toggle("Private account", isOn: $privateAccountEnabled)
-                        Toggle("Dark grid style", isOn: $darkMapEnabled)
-                    }
-                    .padding(16)
-                    .background(Color.white)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Your comments")
@@ -691,25 +661,21 @@ struct GridMapView: UIViewRepresentable {
         map.isPitchEnabled = false
         map.isScrollEnabled = false
         map.isZoomEnabled = true
-        map.mapType = .standard
+        map.mapType = .satellite
         map.userTrackingMode = .follow
         map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: 120, longitudinalMeters: 120), animated: false)
-        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 5_000, longitudinalMeters: 5_000))
-        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 65, maxCenterCoordinateDistance: 5_500)
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 900, longitudinalMeters: 900))
+        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 65, maxCenterCoordinateDistance: 290)
         return map
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 5_000, longitudinalMeters: 5_000))
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 900, longitudinalMeters: 900))
         if mapView.userTrackingMode != .follow {
             mapView.userTrackingMode = .follow
         }
 
-        let overlays = context.coordinator.overlays(
-            active: center,
-            visibleMeters: max(mapView.region.span.latitudeDelta * 111_000, 100),
-            heatmapCounts: heatmapCounts
-        )
+        let overlays = context.coordinator.overlays(active: center, heatmapCounts: heatmapCounts)
         context.coordinator.apply(overlays: overlays, to: mapView)
     }
 
@@ -718,10 +684,9 @@ struct GridMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate {
         private var overlaySignature: String = ""
 
-        func overlays(active coordinate: CLLocationCoordinate2D, visibleMeters: Double, heatmapCounts: [String: Int]) -> [MKPolygon] {
+        func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int]) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let showHeatmap = visibleMeters >= 1_200
-            let radius = showHeatmap ? 25 : 2
+            let radius = 8
             var result: [MKPolygon] = []
 
             for y in (activeIndices.y - radius)...(activeIndices.y + radius) {
@@ -730,11 +695,7 @@ struct GridMapView: UIViewRepresentable {
                     let polygon = HeatPolygon(coordinates: points, count: points.count)
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
                     polygon.isActive = (x == activeIndices.x && y == activeIndices.y)
-                    let count = heatmapCounts[polygon.cellID] ?? 0
-                    if showHeatmap {
-                        polygon.intensity = count
-                        polygon.showActivityDot = count > 0 && !polygon.isActive
-                    }
+                    polygon.hasComments = (heatmapCounts[polygon.cellID] ?? 0) > 0
                     result.append(polygon)
                 }
             }
@@ -754,21 +715,17 @@ struct GridMapView: UIViewRepresentable {
             let renderer = MKPolygonRenderer(polygon: polygon)
 
             if polygon.isActive {
-                renderer.fillColor = UIColor.white.withAlphaComponent(0.95)
+                renderer.fillColor = UIColor.white.withAlphaComponent(0.24)
                 renderer.strokeColor = UIColor.white
-                renderer.lineWidth = 2.4
+                renderer.lineWidth = 3.8
+            } else if polygon.hasComments {
+                renderer.fillColor = .clear
+                renderer.strokeColor = UIColor.systemGreen.withAlphaComponent(0.95)
+                renderer.lineWidth = 1.6
             } else {
-                renderer.fillColor = UIColor.black.withAlphaComponent(0.55)
-                renderer.strokeColor = UIColor.black.withAlphaComponent(0.85)
-                renderer.lineWidth = 0.8
-            }
-
-            if polygon.showActivityDot {
-                let dotted = HeatPolygonRenderer(polygon: polygon)
-                dotted.fillColor = renderer.fillColor
-                dotted.strokeColor = renderer.strokeColor
-                dotted.lineWidth = renderer.lineWidth
-                return dotted
+                renderer.fillColor = .clear
+                renderer.strokeColor = UIColor.white.withAlphaComponent(0.9)
+                renderer.lineWidth = 1.1
             }
 
             return renderer
@@ -778,44 +735,11 @@ struct GridMapView: UIViewRepresentable {
 
 final class HeatPolygon: MKPolygon, @unchecked Sendable {
     var cellID: String = ""
-    var intensity: Int = 0
     var isActive: Bool = false
-    var showActivityDot: Bool = false
+    var hasComments: Bool = false
 
     var signaturePart: String {
-        "\(cellID):\(intensity):\(isActive ? 1 : 0):\(showActivityDot ? 1 : 0)"
-    }
-}
-
-
-final class HeatPolygonRenderer: MKPolygonRenderer {
-    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
-        super.draw(mapRect, zoomScale: zoomScale, in: context)
-        guard let polygon = overlay as? HeatPolygon, polygon.showActivityDot else { return }
-
-        let polygonPoints = polygon.points()
-        let pointCount = polygon.pointCount
-        guard pointCount > 0 else { return }
-
-        var minPoint = point(for: polygonPoints[0])
-        var maxPoint = minPoint
-
-        for idx in 1..<pointCount {
-            let projected = point(for: polygonPoints[idx])
-            minPoint.x = min(minPoint.x, projected.x)
-            minPoint.y = min(minPoint.y, projected.y)
-            maxPoint.x = max(maxPoint.x, projected.x)
-            maxPoint.y = max(maxPoint.y, projected.y)
-        }
-
-        let rect = CGRect(x: minPoint.x, y: minPoint.y, width: maxPoint.x - minPoint.x, height: maxPoint.y - minPoint.y)
-        let diameter = max(4, min(rect.width, rect.height) * 0.24)
-        let dotRect = CGRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)
-
-        context.saveGState()
-        context.setFillColor(UIColor.white.cgColor)
-        context.fillEllipse(in: dotRect)
-        context.restoreGState()
+        "\(cellID):\(isActive ? 1 : 0):\(hasComments ? 1 : 0)"
     }
 }
 
