@@ -660,9 +660,9 @@ struct GridMapView: UIViewRepresentable {
 
     private let defaultDistance: CLLocationDistance = 140
     private let minDistance: CLLocationDistance = 100
-    private let maxDistance: CLLocationDistance = 260
-    private let boundaryDistance: CLLocationDistance = 120
-    private let heatmapThresholdDistance: CLLocationDistance = 220
+    private let maxDistance: CLLocationDistance = 430
+    private let boundaryDistance: CLLocationDistance = 900
+    private let heatmapThresholdDistance: CLLocationDistance = 280
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
