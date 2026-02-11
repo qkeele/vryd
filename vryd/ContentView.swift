@@ -691,6 +691,15 @@ struct GridMapView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
+
+    private static func cellCenterCoordinate(for coordinate: CLLocationCoordinate2D) -> CLLocationCoordinate2D {
+        let indices = SpatialGrid.cellIndices(for: coordinate)
+        let corners = SpatialGrid.corners(forX: indices.x, y: indices.y)
+        let latitude = corners.map(\.latitude).reduce(0, +) / Double(corners.count)
+        let longitude = corners.map(\.longitude).reduce(0, +) / Double(corners.count)
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate {
         var parent: GridMapView
         private var overlaySignature: String = ""
@@ -736,7 +745,7 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let generationRadius = 5 // 11x11 generated grid
+            let generationRadius = 6 // 13x13 generated grid with hidden buffer
             let visibleMinOffset = -5
             let visibleMaxOffset = 4 // 10x10 visible interior
             var result: [MKPolygon] = []
@@ -767,7 +776,8 @@ struct GridMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            refreshOverlays(on: mapView, center: parent.center, heatmapCounts: parent.heatmapCounts)
+            let anchoredCenter = GridMapView.cellCenterCoordinate(for: parent.center)
+            refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: parent.heatmapCounts)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
