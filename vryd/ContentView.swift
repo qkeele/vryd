@@ -669,7 +669,7 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = true
+        map.isScrollEnabled = false
         map.isZoomEnabled = true
         map.mapType = .satellite
         map.userTrackingMode = .follow
@@ -721,11 +721,11 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let halfGridSpan = 5
+            let radius = 5
             var result: [MKPolygon] = []
 
-            for y in (activeIndices.y - halfGridSpan)..<(activeIndices.y + halfGridSpan) {
-                for x in (activeIndices.x - halfGridSpan)..<(activeIndices.x + halfGridSpan) {
+            for y in (activeIndices.y - radius)...(activeIndices.y + radius) {
+                for x in (activeIndices.x - radius)...(activeIndices.x + radius) {
                     let points = SpatialGrid.corners(forX: x, y: y)
                     let polygon = HeatPolygon(coordinates: points, count: points.count)
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
