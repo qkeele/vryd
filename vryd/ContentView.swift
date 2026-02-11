@@ -658,10 +658,10 @@ struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
     let heatmapCounts: [String: Int]
 
-    private let defaultDistance: CLLocationDistance = 180
-    private let minDistance: CLLocationDistance = 130
-    private let maxDistance: CLLocationDistance = 650
-    private let boundaryDistance: CLLocationDistance = 820
+    private let defaultDistance: CLLocationDistance = 140
+    private let minDistance: CLLocationDistance = 100
+    private let maxDistance: CLLocationDistance = 430
+    private let boundaryDistance: CLLocationDistance = 900
     private let heatmapThresholdDistance: CLLocationDistance = 280
 
     func makeUIView(context: Context) -> MKMapView {
@@ -729,12 +729,6 @@ struct GridMapView: UIViewRepresentable {
             guard movedDistance >= 30 else { return }
 
             self.lastUserCenter = userCenter
-
-            let region = mapView.region
-            let centerDistance = MKMapPoint(region.center).distance(to: MKMapPoint(userCenter))
-            if centerDistance > 240 {
-                mapView.setCenter(userCenter, animated: true)
-            }
         }
 
         func refreshOverlays(on mapView: MKMapView, center: CLLocationCoordinate2D, heatmapCounts: [String: Int]) {
@@ -745,7 +739,7 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let generationRadius = 6 // 13x13 generated grid with hidden buffer
+            let generationRadius = 5 // 11x11 generated grid with hidden buffer
             let visibleMinOffset = -5
             let visibleMaxOffset = 4 // 10x10 visible interior
             var result: [MKPolygon] = []
