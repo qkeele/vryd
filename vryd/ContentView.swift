@@ -1,77 +1,91 @@
 import SwiftUI
 import MapKit
 import CoreLocation
-internal import Combine
 
 @MainActor
 final class AppViewModel: ObservableObject {
-    enum SessionState {
-        case signedOut
-        case signedIn(UserProfile)
+    enum Screen {
+        case signIn
+        case username
+        case location
+        case main
     }
 
     enum LocationGateState {
-        case loading
+        case idle
         case denied
         case ready
     }
 
-    @Published var session: SessionState = .signedOut
+    @Published var screen: Screen = .signIn
     @Published var statusMessage = ""
+    @Published var usernameDraft = ""
     @Published var currentCoordinate: CLLocationCoordinate2D?
-    @Published var currentCity = ""
-    @Published var locationState: LocationGateState = .loading
+    @Published var locationState: LocationGateState = .idle
     @Published var gridMessages: [ChatMessage] = []
     @Published var profileMessages: [ChatMessage] = []
     @Published var draftMessage = ""
+    @Published var replyTo: ChatMessage?
 
     let backend: VrydBackend
     let locationManager = LocationManager()
+    private(set) var activeUser: UserProfile?
 
     init(backend: VrydBackend = LiveVrydBackend()) {
         self.backend = backend
-        locationManager.onLocation = { [weak self] coordinate, city in
+        locationManager.onLocation = { [weak self] coordinate in
             Task { @MainActor in
                 self?.currentCoordinate = coordinate
-                self?.currentCity = city
                 self?.locationState = .ready
+                self?.screen = .main
                 await self?.refreshGridData()
             }
         }
         locationManager.onDenied = { [weak self] in
             Task { @MainActor in
                 self?.locationState = .denied
-                self?.statusMessage = "Location is required to use VRYD."
+                self?.statusMessage = "Location is required to see your nearby grid."
             }
         }
     }
 
     var activeCell: GridCell? {
         guard let coordinate = currentCoordinate else { return nil }
-        return GridCell(center: coordinate)
+        return GridCell(coordinate: coordinate)
     }
 
-    var activeUser: UserProfile? {
-        if case let .signedIn(profile) = session { return profile }
-        return nil
+    var topLevelMessages: [ChatMessage] {
+        gridMessages.filter { $0.parentID == nil }
     }
 
-    func bootstrapLocation() {
+    func replies(for parentID: UUID) -> [ChatMessage] {
+        gridMessages.filter { $0.parentID == parentID }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func signInWithApple() async {
+        do {
+            let user = try await backend.signInWithApple()
+            activeUser = user
+            screen = .username
+        } catch {
+            statusMessage = "Apple sign in failed."
+        }
+    }
+
+    func finishUsername() async {
+        guard let user = activeUser else { return }
+        do {
+            let updated = try await backend.updateUsername(userID: user.id, username: usernameDraft)
+            activeUser = updated
+            screen = .location
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func requestLocation() {
+        locationState = .idle
         locationManager.requestAuthorizationAndStart()
-    }
-
-    func continueWithLocalSession() async {
-        let user = UserProfile(
-            id: UUID(),
-            username: "local_user",
-            email: "local@vryd.dev",
-            city: currentCity,
-            provider: .email
-        )
-        session = .signedIn(user)
-        await refreshGridData()
-        await refreshProfile()
-        statusMessage = "Local preview mode: data is only stored while the app is running."
     }
 
     func postMessage() async {
@@ -82,21 +96,23 @@ final class AppViewModel: ObservableObject {
         else { return }
 
         do {
-            _ = try await backend.postMessage(draftMessage, in: cell, from: user)
+            _ = try await backend.postMessage(draftMessage, in: cell, from: user, parentID: replyTo?.id)
             draftMessage = ""
+            replyTo = nil
             await refreshGridData()
             await refreshProfile()
         } catch {
-            statusMessage = "Could not send message."
+            statusMessage = "Could not send comment."
         }
     }
 
     func like(_ message: ChatMessage) async {
+        guard let user = activeUser else { return }
         do {
-            try await backend.like(messageID: message.id)
+            try await backend.like(messageID: message.id, by: user.id)
             await refreshGridData()
         } catch {
-            statusMessage = "Could not like message."
+            statusMessage = "Could not like comment."
         }
     }
 
@@ -107,16 +123,32 @@ final class AppViewModel: ObservableObject {
             await refreshGridData()
             await refreshProfile()
         } catch {
-            statusMessage = "Could not delete message."
+            statusMessage = "Could not delete comment."
+        }
+    }
+
+    func deleteAccount() async {
+        guard let user = activeUser else { return }
+        do {
+            try await backend.deleteAccount(userID: user.id)
+            activeUser = nil
+            usernameDraft = ""
+            draftMessage = ""
+            gridMessages = []
+            profileMessages = []
+            screen = .signIn
+            statusMessage = "Account deleted."
+        } catch {
+            statusMessage = "Could not delete account."
         }
     }
 
     func refreshGridData() async {
-        guard let cell = activeCell else { return }
+        guard let cell = activeCell, let user = activeUser else { return }
         do {
-            gridMessages = try await backend.fetchMessages(in: cell)
+            gridMessages = try await backend.fetchMessages(in: cell, viewerID: user.id)
         } catch {
-            statusMessage = "Could not load chat data."
+            statusMessage = "Could not load comments."
         }
     }
 
@@ -125,15 +157,14 @@ final class AppViewModel: ObservableObject {
         do {
             profileMessages = try await backend.fetchProfileMessages(for: user.id)
         } catch {
-            statusMessage = "Could not load profile."
+            statusMessage = "Could not load profile comments."
         }
     }
 }
 
 final class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private let geocoder = CLGeocoder()
-    var onLocation: ((CLLocationCoordinate2D, String) -> Void)?
+    var onLocation: ((CLLocationCoordinate2D) -> Void)?
     var onDenied: (() -> Void)?
 
     override init() {
@@ -162,10 +193,7 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        geocoder.reverseGeocodeLocation(location) { [weak self] places, _ in
-            let city = places?.first?.locality ?? ""
-            self?.onLocation?(location.coordinate, city)
-        }
+        onLocation?(location.coordinate)
     }
 }
 
@@ -176,21 +204,17 @@ struct ContentView: View {
 
     var body: some View {
         Group {
-            switch viewModel.locationState {
-            case .loading:
-                ProgressView("Getting your location…")
-            case .denied:
-                LocationBlockedView(retryAction: viewModel.bootstrapLocation)
-            case .ready:
-                switch viewModel.session {
-                case .signedOut:
-                    LoginView(viewModel: viewModel)
-                case .signedIn:
-                    mapScreen
-                }
+            switch viewModel.screen {
+            case .signIn:
+                AppleSignInView(viewModel: viewModel)
+            case .username:
+                UsernameOnboardingView(viewModel: viewModel)
+            case .location:
+                LocationPromptView(viewModel: viewModel)
+            case .main:
+                mapScreen
             }
         }
-        .onAppear(perform: viewModel.bootstrapLocation)
     }
 
     private var mapScreen: some View {
@@ -199,6 +223,9 @@ struct ContentView: View {
                 GridMapView(center: coordinate)
                     .ignoresSafeArea()
             }
+
+            EdgeFadeOverlay()
+                .ignoresSafeArea()
 
             VStack {
                 HStack {
@@ -210,13 +237,13 @@ struct ContentView: View {
 
                 Spacer()
 
-                FloatingCircleButton(systemName: "arrow.up.circle.fill") { showingGridChat = true }
+                FloatingCircleButton(systemName: "bubble.left.and.bubble.right.fill") { showingGridChat = true }
                     .padding(.bottom, 26)
             }
         }
         .sheet(isPresented: $showingGridChat) {
             GridChatSheet(viewModel: viewModel)
-                .presentationDetents([.fraction(0.35), .large])
+                .presentationDetents([.fraction(0.38), .large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showingProfile) {
@@ -225,64 +252,109 @@ struct ContentView: View {
     }
 }
 
-struct LocationBlockedView: View {
-    let retryAction: () -> Void
+struct AppleSignInView: View {
+    @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "location.slash")
-                .font(.system(size: 46))
-            Text("Location Required")
-                .font(.title2.weight(.bold))
-            Text("Allow location access in Settings to use the app.")
+        VStack(spacing: 18) {
+            Spacer()
+            Text("VRYD")
+                .font(.system(size: 48, weight: .heavy, design: .rounded))
+            Text("Talk to people in your exact 100m square.")
                 .foregroundStyle(.secondary)
-            Button("Try Again", action: retryAction)
-                .buttonStyle(.borderedProminent)
+
+            Button(action: { Task { await viewModel.signInWithApple() } }) {
+                Label("Sign in with Apple", systemImage: "apple.logo")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(.black)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .padding(.top, 14)
+
+            if !viewModel.statusMessage.isEmpty {
+                Text(viewModel.statusMessage)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+            Spacer()
         }
         .padding(20)
     }
 }
 
-struct LoginView: View {
+struct UsernameOnboardingView: View {
     @ObservedObject var viewModel: AppViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                Text("VRYD")
-                    .font(.system(size: 42, weight: .heavy, design: .rounded))
-                Text("Talk with people in your exact square.")
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Choose a username")
+                .font(.title.bold())
+            Text("Instagram-style rules")
+                .foregroundStyle(.secondary)
 
-                Button("Continue") { Task { await viewModel.continueWithLocalSession() } }
-                    .buttonStyle(.borderedProminent)
+            TextField("username", text: $viewModel.usernameDraft)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .textFieldStyle(.roundedBorder)
 
-                Text("No account or database required for this preview build.")
+            Text(UsernameRules.helperText)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            Button("Continue") { Task { await viewModel.finishUsername() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(!UsernameRules.isValid(viewModel.usernameDraft))
+
+            if !viewModel.statusMessage.isEmpty {
+                Text(viewModel.statusMessage)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
-                if !viewModel.statusMessage.isEmpty {
-                    Text(viewModel.statusMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Database schema")
-                        .font(.caption.weight(.semibold))
-                    ScrollView {
-                        Text(SupabaseSetupGuide.sql)
-                            .font(.caption2.monospaced())
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(height: 130)
-                    .padding(8)
-                    .background(.black.opacity(0.05))
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
+                    .foregroundStyle(.red)
             }
-            .padding(20)
+            Spacer()
+        }
+        .padding(20)
+    }
+}
+
+struct LocationPromptView: View {
+    @ObservedObject var viewModel: AppViewModel
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "location.circle.fill")
+                .font(.system(size: 46))
+            Text("Enable location")
+                .font(.title2.weight(.bold))
+            Text("We only use your location to compute your current grid cell.")
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button("Allow Location", action: viewModel.requestLocation)
+                .buttonStyle(.borderedProminent)
+
+            if viewModel.locationState == .denied {
+                Text("Location is required for the map experience. Enable it in Settings.")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(20)
+    }
+}
+
+struct EdgeFadeOverlay: View {
+    var body: some View {
+        HStack {
+            LinearGradient(colors: [Color.white.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: 42)
+            Spacer()
+            LinearGradient(colors: [.clear, Color.white.opacity(0.55)], startPoint: .leading, endPoint: .trailing)
+                .frame(width: 42)
         }
     }
 }
@@ -310,7 +382,7 @@ struct GridChatSheet: View {
     var body: some View {
         VStack(spacing: 10) {
             HStack {
-                Text("Grid \(GridCell.cellKey(for: viewModel.currentCoordinate ?? CLLocationCoordinate2D()))")
+                Text("Grid \(SpatialGrid.cellID(for: viewModel.currentCoordinate ?? CLLocationCoordinate2D()))")
                     .font(.headline)
                 Spacer()
             }
@@ -318,13 +390,30 @@ struct GridChatSheet: View {
 
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(viewModel.gridMessages) { message in
-                        CommentCard(
-                            message: message,
-                            canDelete: viewModel.activeUser?.id == message.authorID,
-                            likeAction: { Task { await viewModel.like(message) } },
-                            deleteAction: { Task { await viewModel.delete(message) } }
-                        )
+                    ForEach(viewModel.topLevelMessages) { message in
+                        VStack(alignment: .leading, spacing: 8) {
+                            CommentCard(
+                                message: message,
+                                canDelete: viewModel.activeUser?.id == message.authorID,
+                                likeAction: { Task { await viewModel.like(message) } },
+                                replyAction: {
+                                    viewModel.replyTo = message
+                                    viewModel.draftMessage = "@\(message.author) "
+                                },
+                                deleteAction: { Task { await viewModel.delete(message) } }
+                            )
+
+                            ForEach(viewModel.replies(for: message.id)) { reply in
+                                CommentCard(
+                                    message: reply,
+                                    canDelete: viewModel.activeUser?.id == reply.authorID,
+                                    likeAction: { Task { await viewModel.like(reply) } },
+                                    replyAction: {},
+                                    deleteAction: { Task { await viewModel.delete(reply) } }
+                                )
+                                .padding(.leading, 22)
+                            }
+                        }
                     }
 
                     if viewModel.gridMessages.isEmpty {
@@ -336,14 +425,32 @@ struct GridChatSheet: View {
                 .padding(.horizontal)
             }
 
-            HStack(spacing: 10) {
-                TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...3)
-                Button("Post") { Task { await viewModel.postMessage() } }
-                    .buttonStyle(.borderedProminent)
+            VStack(spacing: 6) {
+                if let reply = viewModel.replyTo {
+                    HStack {
+                        Text("Replying to @\(reply.author)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel") {
+                            viewModel.replyTo = nil
+                            viewModel.draftMessage = ""
+                        }
+                        .font(.caption)
+                    }
+                    .padding(.horizontal)
+                }
+
+                HStack(spacing: 10) {
+                    TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...3)
+                    Button("Post") { Task { await viewModel.postMessage() } }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding(.horizontal)
             }
-            .padding()
+            .padding(.bottom, 10)
         }
         .task { await viewModel.refreshGridData() }
     }
@@ -353,12 +460,13 @@ struct CommentCard: View {
     let message: ChatMessage
     let canDelete: Bool
     let likeAction: () -> Void
+    let replyAction: () -> Void
     let deleteAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("@\(message.author)")
+                Text("u/\(message.author)")
                     .font(.subheadline.bold())
                 Spacer()
                 Text(message.createdAt.formatted(date: .omitted, time: .shortened))
@@ -366,38 +474,71 @@ struct CommentCard: View {
                     .foregroundStyle(.secondary)
             }
             Text(message.text)
-            HStack(spacing: 12) {
+            HStack(spacing: 14) {
                 Button(action: likeAction) {
-                    Label("\(message.likes)", systemImage: "heart")
+                    Label("\(message.likeCount)", systemImage: message.userHasLiked ? "heart.fill" : "heart")
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(message.userHasLiked ? .pink : .secondary)
+                .disabled(message.userHasLiked)
+
+                if message.parentID == nil {
+                    Button("Reply", action: replyAction)
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                }
+
                 if canDelete {
                     Button("Delete", role: .destructive, action: deleteAction)
                         .font(.caption)
                 }
             }
+            .font(.caption)
         }
         .padding(12)
-        .background(.gray.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.gray.opacity(0.11))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
 struct ProfileView: View {
     @ObservedObject var viewModel: AppViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var confirmDeleteAccount = false
 
     var body: some View {
         NavigationStack {
-            List(viewModel.profileMessages) { message in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(message.text)
-                    Text(message.createdAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            List {
+                Section("Your comments") {
+                    ForEach(viewModel.profileMessages) { message in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(message.text)
+                            Text(message.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Section {
+                    Button("Delete Account", role: .destructive) {
+                        confirmDeleteAccount = true
+                    }
                 }
             }
-            .navigationTitle("Your comments")
+            .navigationTitle("Profile")
             .task { await viewModel.refreshProfile() }
+            .alert("Delete account?", isPresented: $confirmDeleteAccount) {
+                Button("Delete", role: .destructive) {
+                    Task {
+                        await viewModel.deleteAccount()
+                        dismiss()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes your account, your comments, and your likes.")
+            }
         }
     }
 }
@@ -414,14 +555,15 @@ struct GridMapView: UIViewRepresentable {
         map.isPitchEnabled = false
         map.isScrollEnabled = false
         map.isZoomEnabled = false
+        map.mapType = .satellite
         return map
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        let region = MKCoordinateRegion(center: center, latitudinalMeters: 650, longitudinalMeters: 650)
+        let region = MKCoordinateRegion(center: center, latitudinalMeters: 150, longitudinalMeters: 150)
         mapView.setRegion(region, animated: true)
 
-        let overlays = context.coordinator.gridOverlays(in: region, active: center)
+        let overlays = context.coordinator.gridOverlays(active: center, radius: 2)
         mapView.removeOverlays(mapView.overlays)
         mapView.addOverlays(overlays)
     }
@@ -429,37 +571,15 @@ struct GridMapView: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
-        private let cellDistance: Double = 100
-
-        func gridOverlays(in region: MKCoordinateRegion, active coordinate: CLLocationCoordinate2D) -> [MKPolygon] {
-            let latStep = GridCell.metersToLatitudeDegrees(cellDistance)
-            let lonStep = GridCell.metersToLongitudeDegrees(cellDistance, at: coordinate.latitude)
-
-            let latMin = region.center.latitude - region.span.latitudeDelta * 0.75
-            let latMax = region.center.latitude + region.span.latitudeDelta * 0.75
-            let lonMin = region.center.longitude - region.span.longitudeDelta * 0.75
-            let lonMax = region.center.longitude + region.span.longitudeDelta * 0.75
-
-            let latStart = Int(floor(latMin / latStep))
-            let latEnd = Int(ceil(latMax / latStep))
-            let lonStart = Int(floor(lonMin / lonStep))
-            let lonEnd = Int(ceil(lonMax / lonStep))
-
-            let activeKey = GridCell.cellKey(for: coordinate)
+        func gridOverlays(active coordinate: CLLocationCoordinate2D, radius: Int) -> [MKPolygon] {
+            let active = SpatialGrid.cellIndices(for: coordinate)
             var result: [MKPolygon] = []
 
-            for latIndex in latStart...latEnd {
-                for lonIndex in lonStart...lonEnd {
-                    let startLat = Double(latIndex) * latStep
-                    let startLon = Double(lonIndex) * lonStep
-                    let points = [
-                        CLLocationCoordinate2D(latitude: startLat, longitude: startLon),
-                        CLLocationCoordinate2D(latitude: startLat + latStep, longitude: startLon),
-                        CLLocationCoordinate2D(latitude: startLat + latStep, longitude: startLon + lonStep),
-                        CLLocationCoordinate2D(latitude: startLat, longitude: startLon + lonStep)
-                    ]
+            for y in (active.y - radius)...(active.y + radius) {
+                for x in (active.x - radius)...(active.x + radius) {
+                    let points = SpatialGrid.corners(forX: x, y: y)
                     let polygon = MKPolygon(coordinates: points, count: points.count)
-                    polygon.title = "\(latIndex):\(lonIndex)" == activeKey ? "active" : "grid"
+                    polygon.title = (x == active.x && y == active.y) ? "active" : "grid"
                     result.append(polygon)
                 }
             }
