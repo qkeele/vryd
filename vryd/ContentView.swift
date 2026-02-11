@@ -721,11 +721,11 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let radius = 5
+            let halfGridSpan = 5
             var result: [MKPolygon] = []
 
-            for y in (activeIndices.y - radius)...(activeIndices.y + radius) {
-                for x in (activeIndices.x - radius)...(activeIndices.x + radius) {
+            for y in (activeIndices.y - halfGridSpan)..<(activeIndices.y + halfGridSpan) {
+                for x in (activeIndices.x - halfGridSpan)..<(activeIndices.x + halfGridSpan) {
                     let points = SpatialGrid.corners(forX: x, y: y)
                     let polygon = HeatPolygon(coordinates: points, count: points.count)
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
