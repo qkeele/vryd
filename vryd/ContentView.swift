@@ -32,6 +32,11 @@ final class AppViewModel: ObservableObject {
     let locationManager = LocationManager()
     private(set) var activeUser: UserProfile?
 
+    var displayUsername: String {
+        let trimmed = activeUser?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? "@new_user" : "@\(trimmed)"
+    }
+
     init(backend: VrydBackend = LiveVrydBackend()) {
         self.backend = backend
         locationManager.onLocation = { [weak self] coordinate in
@@ -367,12 +372,22 @@ struct LocationPromptView: View {
 
 struct EdgeFadeOverlay: View {
     var body: some View {
-        VStack {
-            LinearGradient(colors: [Color.white.opacity(0.9), .clear], startPoint: .top, endPoint: .bottom)
-                .frame(height: 88)
-            Spacer()
-            LinearGradient(colors: [.clear, Color.white.opacity(0.9)], startPoint: .top, endPoint: .bottom)
-                .frame(height: 88)
+        ZStack {
+            VStack {
+                LinearGradient(colors: [Color.white.opacity(0.92), .clear], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 90)
+                Spacer()
+                LinearGradient(colors: [.clear, Color.white.opacity(0.92)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: 90)
+            }
+
+            HStack {
+                LinearGradient(colors: [Color.white.opacity(0.9), .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 64)
+                Spacer()
+                LinearGradient(colors: [.clear, Color.white.opacity(0.9)], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: 64)
+            }
         }
         .allowsHitTesting(false)
     }
@@ -551,28 +566,102 @@ struct ProfileView: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
     @State private var confirmDeleteAccount = false
+    @State private var pushNotificationsEnabled = true
+    @State private var privateAccountEnabled = false
+    @State private var darkMapEnabled = true
 
     var body: some View {
         NavigationStack {
-            List {
-                Section("Your comments") {
-                    ForEach(viewModel.profileMessages) { message in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .center) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(message.text)
-                            Text(message.createdAt.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption)
+                            Text(viewModel.displayUsername)
+                                .font(.title2.weight(.bold))
+                            Text("Your local social profile")
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
-                    }
-                }
 
-                Section {
+                        Spacer()
+
+                        Button(action: {}) {
+                            Image(systemName: "gearshape.fill")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.black)
+                                .frame(width: 38, height: 38)
+                                .background(Color.black.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Settings")
+                            .font(.headline)
+
+                        Toggle("Push notifications", isOn: $pushNotificationsEnabled)
+                        Toggle("Private account", isOn: $privateAccountEnabled)
+                        Toggle("Dark grid style", isOn: $darkMapEnabled)
+                    }
+                    .padding(16)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Your comments")
+                            .font(.headline)
+
+                        if viewModel.profileMessages.isEmpty {
+                            Text("You haven’t posted any comments yet.")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        ForEach(viewModel.profileMessages) { message in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(message.text)
+                                    .foregroundStyle(.black)
+                                Text(message.createdAt.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color.black.opacity(0.04))
+                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+                    }
+                    .padding(16)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
                     Button("Delete Account", role: .destructive) {
                         confirmDeleteAccount = true
                     }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(Color.red.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .padding(16)
+            }
+            .background(Color.white)
+            .navigationTitle("Profile")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                        .foregroundStyle(.black)
                 }
             }
-            .navigationTitle("Profile")
             .task { await viewModel.refreshProfile() }
             .alert("Delete account?", isPresented: $confirmDeleteAccount) {
                 Button("Delete", role: .destructive) {
@@ -604,9 +693,9 @@ struct GridMapView: UIViewRepresentable {
         map.isZoomEnabled = true
         map.mapType = .standard
         map.userTrackingMode = .follow
-        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: 220, longitudinalMeters: 220), animated: false)
+        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: 120, longitudinalMeters: 120), animated: false)
         map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 5_000, longitudinalMeters: 5_000))
-        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 120, maxCenterCoordinateDistance: 5_500)
+        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 65, maxCenterCoordinateDistance: 5_500)
         return map
     }
 
@@ -641,8 +730,10 @@ struct GridMapView: UIViewRepresentable {
                     let polygon = HeatPolygon(coordinates: points, count: points.count)
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
                     polygon.isActive = (x == activeIndices.x && y == activeIndices.y)
+                    let count = heatmapCounts[polygon.cellID] ?? 0
                     if showHeatmap {
-                        polygon.intensity = heatmapCounts[polygon.cellID] ?? 0
+                        polygon.intensity = count
+                        polygon.showActivityDot = count > 0 && !polygon.isActive
                     }
                     result.append(polygon)
                 }
@@ -662,19 +753,22 @@ struct GridMapView: UIViewRepresentable {
             guard let polygon = overlay as? HeatPolygon else { return MKOverlayRenderer(overlay: overlay) }
             let renderer = MKPolygonRenderer(polygon: polygon)
 
-            if polygon.intensity > 0 {
-                let alpha = min(0.85, 0.14 + (Double(polygon.intensity) * 0.08))
-                renderer.fillColor = UIColor.black.withAlphaComponent(alpha)
-                renderer.strokeColor = UIColor.black.withAlphaComponent(0.35)
-                renderer.lineWidth = polygon.isActive ? 2.2 : 0.6
-            } else if polygon.isActive {
-                renderer.fillColor = UIColor.black.withAlphaComponent(0.2)
-                renderer.strokeColor = UIColor.black
-                renderer.lineWidth = 2.2
+            if polygon.isActive {
+                renderer.fillColor = UIColor.white.withAlphaComponent(0.95)
+                renderer.strokeColor = UIColor.white
+                renderer.lineWidth = 2.4
             } else {
-                renderer.fillColor = UIColor.clear
-                renderer.strokeColor = UIColor.black.withAlphaComponent(0.18)
-                renderer.lineWidth = 0.7
+                renderer.fillColor = UIColor.black.withAlphaComponent(0.55)
+                renderer.strokeColor = UIColor.black.withAlphaComponent(0.85)
+                renderer.lineWidth = 0.8
+            }
+
+            if polygon.showActivityDot {
+                let dotted = HeatPolygonRenderer(polygon: polygon)
+                dotted.fillColor = renderer.fillColor
+                dotted.strokeColor = renderer.strokeColor
+                dotted.lineWidth = renderer.lineWidth
+                return dotted
             }
 
             return renderer
@@ -686,9 +780,42 @@ final class HeatPolygon: MKPolygon, @unchecked Sendable {
     var cellID: String = ""
     var intensity: Int = 0
     var isActive: Bool = false
+    var showActivityDot: Bool = false
 
     var signaturePart: String {
-        "\(cellID):\(intensity):\(isActive ? 1 : 0)"
+        "\(cellID):\(intensity):\(isActive ? 1 : 0):\(showActivityDot ? 1 : 0)"
+    }
+}
+
+
+final class HeatPolygonRenderer: MKPolygonRenderer {
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        super.draw(mapRect, zoomScale: zoomScale, in: context)
+        guard let polygon = overlay as? HeatPolygon, polygon.showActivityDot else { return }
+
+        let polygonPoints = polygon.points()
+        let pointCount = polygon.pointCount
+        guard pointCount > 0 else { return }
+
+        var minPoint = point(for: polygonPoints[0])
+        var maxPoint = minPoint
+
+        for idx in 1..<pointCount {
+            let projected = point(for: polygonPoints[idx])
+            minPoint.x = min(minPoint.x, projected.x)
+            minPoint.y = min(minPoint.y, projected.y)
+            maxPoint.x = max(maxPoint.x, projected.x)
+            maxPoint.y = max(maxPoint.y, projected.y)
+        }
+
+        let rect = CGRect(x: minPoint.x, y: minPoint.y, width: maxPoint.x - minPoint.x, height: maxPoint.y - minPoint.y)
+        let diameter = max(4, min(rect.width, rect.height) * 0.24)
+        let dotRect = CGRect(x: rect.midX - diameter / 2, y: rect.midY - diameter / 2, width: diameter, height: diameter)
+
+        context.saveGState()
+        context.setFillColor(UIColor.white.cgColor)
+        context.fillEllipse(in: dotRect)
+        context.restoreGState()
     }
 }
 
