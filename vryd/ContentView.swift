@@ -27,6 +27,7 @@ final class AppViewModel: ObservableObject {
     @Published var draftMessage = ""
     @Published var replyTo: ChatMessage?
     @Published var heatmapCounts: [String: Int] = [:]
+    @Published var isMapZoomedOut = false
 
     let backend: VrydBackend
     let locationManager = LocationManager()
@@ -175,7 +176,7 @@ final class AppViewModel: ObservableObject {
     func refreshHeatmapData() async {
         guard let coordinate = currentCoordinate else { return }
         do {
-            heatmapCounts = try await backend.fetchDailyCellCounts(near: coordinate, radiusMeters: 2_500, date: .now)
+            heatmapCounts = try await backend.fetchDailyCellCounts(near: coordinate, radiusMeters: 750, date: .now)
         } catch {
             statusMessage = "Could not load heatmap data."
         }
@@ -245,7 +246,7 @@ struct ContentView: View {
     private var mapScreen: some View {
         ZStack(alignment: .bottom) {
             if let coordinate = viewModel.currentCoordinate {
-                GridMapView(center: coordinate, heatmapCounts: viewModel.heatmapCounts)
+                GridMapView(center: coordinate, heatmapCounts: viewModel.heatmapCounts, isZoomedOut: $viewModel.isMapZoomedOut)
                     .ignoresSafeArea()
             }
 
@@ -254,6 +255,10 @@ struct ContentView: View {
 
             VStack {
                 HStack {
+                    FloatingCircleButton(systemName: viewModel.isMapZoomedOut ? "plus.magnifyingglass" : "minus.magnifyingglass") {
+                        viewModel.isMapZoomedOut.toggle()
+                    }
+
                     Spacer()
                     FloatingCircleButton(systemName: "person.fill") { showingProfile = true }
                 }
@@ -651,6 +656,11 @@ struct ProfileView: View {
 struct GridMapView: UIViewRepresentable {
     let center: CLLocationCoordinate2D
     let heatmapCounts: [String: Int]
+    @Binding var isZoomedOut: Bool
+
+    private let zoomedInDistance: CLLocationDistance = 140
+    private let zoomedOutDistance: CLLocationDistance = 720
+    private let zoomThresholdDistance: CLLocationDistance = 360
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView(frame: .zero)
@@ -659,34 +669,59 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = false
+        map.isScrollEnabled = true
         map.isZoomEnabled = true
         map.mapType = .satellite
         map.userTrackingMode = .follow
-        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: 120, longitudinalMeters: 120), animated: false)
-        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 900, longitudinalMeters: 900))
-        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 65, maxCenterCoordinateDistance: 290)
+        map.setRegion(MKCoordinateRegion(center: center, latitudinalMeters: zoomedInDistance, longitudinalMeters: zoomedInDistance), animated: false)
+        map.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
+        map.cameraZoomRange = MKMapView.CameraZoomRange(minCenterCoordinateDistance: 85, maxCenterCoordinateDistance: 900)
+        context.coordinator.parent = self
         return map
     }
 
     func updateUIView(_ mapView: MKMapView, context: Context) {
-        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 900, longitudinalMeters: 900))
+        context.coordinator.parent = self
+        mapView.cameraBoundary = MKMapView.CameraBoundary(coordinateRegion: MKCoordinateRegion(center: center, latitudinalMeters: 1_000, longitudinalMeters: 1_000))
         if mapView.userTrackingMode != .follow {
             mapView.userTrackingMode = .follow
         }
 
-        let overlays = context.coordinator.overlays(active: center, heatmapCounts: heatmapCounts)
-        context.coordinator.apply(overlays: overlays, to: mapView)
+        context.coordinator.refreshOverlays(on: mapView, center: center, heatmapCounts: heatmapCounts)
+        context.coordinator.syncZoomState(on: mapView)
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: GridMapView
         private var overlaySignature: String = ""
+        private var lastZoomedOutState: Bool?
 
-        func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int]) -> [MKPolygon] {
+        init(parent: GridMapView) {
+            self.parent = parent
+        }
+
+        func syncZoomState(on mapView: MKMapView) {
+            let targetDistance = parent.isZoomedOut ? parent.zoomedOutDistance : parent.zoomedInDistance
+            let distance = mapView.camera.centerCoordinateDistance
+            let isCloseEnough = abs(distance - targetDistance) < 40
+            if !isCloseEnough {
+                let camera = mapView.camera
+                camera.centerCoordinateDistance = targetDistance
+                mapView.setCamera(camera, animated: true)
+            }
+        }
+
+        func refreshOverlays(on mapView: MKMapView, center: CLLocationCoordinate2D, heatmapCounts: [String: Int]) {
+            let showHeatmap = mapView.camera.centerCoordinateDistance >= parent.zoomThresholdDistance
+            let overlays = overlays(active: center, heatmapCounts: heatmapCounts, showHeatmap: showHeatmap)
+            apply(overlays: overlays, to: mapView)
+        }
+
+        func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let radius = 8
+            let radius = 5
             var result: [MKPolygon] = []
 
             for y in (activeIndices.y - radius)...(activeIndices.y + radius) {
@@ -695,7 +730,7 @@ struct GridMapView: UIViewRepresentable {
                     let polygon = HeatPolygon(coordinates: points, count: points.count)
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
                     polygon.isActive = (x == activeIndices.x && y == activeIndices.y)
-                    polygon.hasComments = (heatmapCounts[polygon.cellID] ?? 0) > 0
+                    polygon.hasComments = showHeatmap && (heatmapCounts[polygon.cellID] ?? 0) > 0
                     result.append(polygon)
                 }
             }
@@ -708,6 +743,17 @@ struct GridMapView: UIViewRepresentable {
             overlaySignature = signature
             mapView.removeOverlays(mapView.overlays)
             mapView.addOverlays(overlays)
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            let isZoomedOutNow = mapView.camera.centerCoordinateDistance >= parent.zoomThresholdDistance
+            if lastZoomedOutState != isZoomedOutNow {
+                lastZoomedOutState = isZoomedOutNow
+                if parent.isZoomedOut != isZoomedOutNow {
+                    parent.isZoomedOut = isZoomedOutNow
+                }
+            }
+            refreshOverlays(on: mapView, center: parent.center, heatmapCounts: parent.heatmapCounts)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
