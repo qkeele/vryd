@@ -2,67 +2,45 @@ import Foundation
 import CoreLocation
 
 enum AuthProvider: String, Codable, CaseIterable, Identifiable {
-    case email
     case apple
-    case google
 
     var id: String { rawValue }
-    var displayName: String {
-        switch self {
-        case .email: return "Email"
-        case .apple: return "Apple"
-        case .google: return "Google"
-        }
-    }
 }
 
 struct UserProfile: Identifiable, Hashable {
     let id: UUID
     var username: String
     var email: String
-    var city: String
     var provider: AuthProvider
+
+    var hasValidUsername: Bool {
+        UsernameRules.isValid(username)
+    }
 }
 
-struct GridCell: Identifiable {
+enum UsernameRules {
+    static let minLength = 3
+    static let maxLength = 20
+
+    static func isValid(_ username: String) -> Bool {
+        guard username.count >= minLength, username.count <= maxLength else { return false }
+        guard username.range(of: "^[A-Za-z0-9._]+$", options: .regularExpression) != nil else { return false }
+        guard !username.hasPrefix("."), !username.hasSuffix("."), !username.contains("..") else { return false }
+        return true
+    }
+
+    static var helperText: String {
+        "3–20 chars. Use letters, numbers, periods, and underscores. No leading/trailing periods, no consecutive periods."
+    }
+}
+
+struct GridCell: Identifiable, Hashable {
     let id: String
-    let center: CLLocationCoordinate2D
     let dateKey: String
 
-    init(center: CLLocationCoordinate2D, date: Date = .now) {
-        self.center = center
+    init(coordinate: CLLocationCoordinate2D, date: Date = .now) {
         self.dateKey = GridCell.dayFormatter.string(from: date)
-        self.id = "\(GridCell.cellKey(for: center))_\(dateKey)"
-    }
-
-    static func cellKey(for coordinate: CLLocationCoordinate2D) -> String {
-        let latStep = metersToLatitudeDegrees(100)
-        let lonStep = metersToLongitudeDegrees(100, at: coordinate.latitude)
-        let latIndex = Int(floor(coordinate.latitude / latStep))
-        let lonIndex = Int(floor(coordinate.longitude / lonStep))
-        return "\(latIndex):\(lonIndex)"
-    }
-
-    static func corners(for coordinate: CLLocationCoordinate2D) -> [CLLocationCoordinate2D] {
-        let latStep = metersToLatitudeDegrees(100)
-        let lonStep = metersToLongitudeDegrees(100, at: coordinate.latitude)
-        let startLat = floor(coordinate.latitude / latStep) * latStep
-        let startLon = floor(coordinate.longitude / lonStep) * lonStep
-        return [
-            CLLocationCoordinate2D(latitude: startLat, longitude: startLon),
-            CLLocationCoordinate2D(latitude: startLat + latStep, longitude: startLon),
-            CLLocationCoordinate2D(latitude: startLat + latStep, longitude: startLon + lonStep),
-            CLLocationCoordinate2D(latitude: startLat, longitude: startLon + lonStep)
-        ]
-    }
-
-    static func metersToLatitudeDegrees(_ meters: Double) -> Double {
-        meters / 111_111.0
-    }
-
-    static func metersToLongitudeDegrees(_ meters: Double, at latitude: Double) -> Double {
-        let adjusted = max(cos(latitude * .pi / 180.0), 0.1)
-        return meters / (111_111.0 * adjusted)
+        self.id = "\(SpatialGrid.cellID(for: coordinate))_\(dateKey)"
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -72,6 +50,53 @@ struct GridCell: Identifiable {
     }()
 }
 
+enum SpatialGrid {
+    /// Stable computed grid. For production this should be replaced by H3 index at ~100m resolution.
+    static let cellSizeMeters: Double = 100
+
+    static func cellID(for coordinate: CLLocationCoordinate2D) -> String {
+        let meters = mercatorMeters(for: coordinate)
+        let xIndex = Int(floor(meters.x / cellSizeMeters))
+        let yIndex = Int(floor(meters.y / cellSizeMeters))
+        return "\(xIndex):\(yIndex)"
+    }
+
+    static func cellIndices(for coordinate: CLLocationCoordinate2D) -> (x: Int, y: Int) {
+        let meters = mercatorMeters(for: coordinate)
+        return (Int(floor(meters.x / cellSizeMeters)), Int(floor(meters.y / cellSizeMeters)))
+    }
+
+    static func corners(forX x: Int, y: Int) -> [CLLocationCoordinate2D] {
+        let minX = Double(x) * cellSizeMeters
+        let minY = Double(y) * cellSizeMeters
+        let maxX = minX + cellSizeMeters
+        let maxY = minY + cellSizeMeters
+
+        return [
+            coordinate(forMercatorX: minX, y: minY),
+            coordinate(forMercatorX: maxX, y: minY),
+            coordinate(forMercatorX: maxX, y: maxY),
+            coordinate(forMercatorX: minX, y: maxY)
+        ]
+    }
+
+    private static let originShift = 20_037_508.342789244
+
+    private static func mercatorMeters(for coordinate: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+        let x = coordinate.longitude * originShift / 180.0
+        let lat = min(max(coordinate.latitude, -85.05112878), 85.05112878)
+        let y = log(tan((90 + lat) * .pi / 360.0)) / (.pi / 180.0)
+        return (x, y * originShift / 180.0)
+    }
+
+    private static func coordinate(forMercatorX x: Double, y: Double) -> CLLocationCoordinate2D {
+        let lon = (x / originShift) * 180.0
+        var lat = (y / originShift) * 180.0
+        lat = 180.0 / .pi * (2.0 * atan(exp(lat * .pi / 180.0)) - .pi / 2.0)
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+}
+
 struct ChatMessage: Identifiable, Hashable {
     let id: UUID
     let authorID: UUID
@@ -79,23 +104,7 @@ struct ChatMessage: Identifiable, Hashable {
     let text: String
     let createdAt: Date
     let gridCellID: String
-    var likes: Int
-}
-
-struct ProfileRecord: Codable {
-    let id: UUID
-    let username: String
-    let email: String
-    let provider: String
-    let city: String
-}
-
-struct GridMessageRecord: Codable {
-    let id: UUID
-    let authorID: UUID
-    let author: String
-    let text: String
-    let gridCellID: String
-    let likes: Int
-    let createdAt: Date
+    let parentID: UUID?
+    var likeCount: Int
+    var userHasLiked: Bool
 }
