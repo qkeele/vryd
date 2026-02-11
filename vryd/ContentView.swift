@@ -17,9 +17,6 @@ final class AppViewModel: ObservableObject {
     }
 
     @Published var session: SessionState = .signedOut
-    @Published var email = ""
-    @Published var password = ""
-    @Published var username = ""
     @Published var statusMessage = ""
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var currentCity = ""
@@ -63,52 +60,18 @@ final class AppViewModel: ObservableObject {
         locationManager.requestAuthorizationAndStart()
     }
 
-    func signUp() async {
-        do {
-            let user = try await backend.signUp(username: username, email: email, password: password)
-            session = .signedIn(user)
-            await refreshGridData()
-            await refreshProfile()
-            statusMessage = ""
-        } catch {
-            statusMessage = error.localizedDescription
-        }
-    }
-
-    func signIn() async {
-        do {
-            let user = try await backend.signIn(email: email, password: password)
-            session = .signedIn(user)
-            await refreshGridData()
-            await refreshProfile()
-            statusMessage = ""
-        } catch {
-            statusMessage = error.localizedDescription
-        }
-    }
-
-    func signInWithApple() async {
-        do {
-            let user = try await backend.signInWithApple()
-            session = .signedIn(user)
-            await refreshGridData()
-            await refreshProfile()
-            statusMessage = ""
-        } catch {
-            statusMessage = error.localizedDescription
-        }
-    }
-
-    func signInWithGoogle() async {
-        do {
-            let user = try await backend.signInWithGoogle()
-            session = .signedIn(user)
-            await refreshGridData()
-            await refreshProfile()
-            statusMessage = ""
-        } catch {
-            statusMessage = error.localizedDescription
-        }
+    func continueWithLocalSession() async {
+        let user = UserProfile(
+            id: UUID(),
+            username: "local_user",
+            email: "local@vryd.dev",
+            city: currentCity,
+            provider: .email
+        )
+        session = .signedIn(user)
+        await refreshGridData()
+        await refreshProfile()
+        statusMessage = "Local preview mode: data is only stored while the app is running."
     }
 
     func postMessage() async {
@@ -291,25 +254,13 @@ struct LoginView: View {
                 Text("Talk with people in your exact square.")
                     .foregroundStyle(.secondary)
 
-                VStack(spacing: 10) {
-                    TextField("Username", text: $viewModel.username)
-                    TextField("Email", text: $viewModel.email)
-                        .textInputAutocapitalization(.never)
-                    SecureField("Password", text: $viewModel.password)
-                }
-                .textFieldStyle(.roundedBorder)
-
-                Button("Continue with Email") { Task { await viewModel.signIn() } }
+                Button("Continue") { Task { await viewModel.continueWithLocalSession() } }
                     .buttonStyle(.borderedProminent)
 
-                Button("Create Account") { Task { await viewModel.signUp() } }
-                    .buttonStyle(.bordered)
-
-                Button("Continue with Apple") { Task { await viewModel.signInWithApple() } }
-                    .buttonStyle(.bordered)
-
-                Button("Continue with Google") { Task { await viewModel.signInWithGoogle() } }
-                    .buttonStyle(.bordered)
+                Text("No account or database required for this preview build.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
 
                 if !viewModel.statusMessage.isEmpty {
                     Text(viewModel.statusMessage)
