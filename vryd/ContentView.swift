@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import CoreLocation
+internal import Combine
 
 @MainActor
 final class AppViewModel: ObservableObject {
