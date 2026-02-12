@@ -660,7 +660,7 @@ struct GridMapView: UIViewRepresentable {
 
     private let defaultDistance: CLLocationDistance = 140
     private let minDistance: CLLocationDistance = 100
-    private let maxDistance: CLLocationDistance = 430
+    private let maxDistance: CLLocationDistance = 1290
     private let boundaryDistance: CLLocationDistance = 900
     private let heatmapThresholdDistance: CLLocationDistance = 280
 
