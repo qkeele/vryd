@@ -671,7 +671,7 @@ struct GridMapView: UIViewRepresentable {
         map.delegate = context.coordinator
         map.isRotateEnabled = false
         map.isPitchEnabled = false
-        map.isScrollEnabled = true
+        map.isScrollEnabled = false
         map.isZoomEnabled = true
         map.mapType = .satellite
         map.userTrackingMode = .none
@@ -705,6 +705,7 @@ struct GridMapView: UIViewRepresentable {
         private var overlaySignature: String = ""
         private var hasInitializedCamera = false
         private var lastUserCenter: CLLocationCoordinate2D?
+        private var isRecenteringCamera = false
 
         init(parent: GridMapView) {
             self.parent = parent
@@ -726,9 +727,23 @@ struct GridMapView: UIViewRepresentable {
             }
 
             let movedDistance = MKMapPoint(userCenter).distance(to: MKMapPoint(previousUserCenter))
-            guard movedDistance >= 30 else { return }
+            let currentZoomDistance = mapView.camera.centerCoordinateDistance
+            let clampedZoomDistance = max(parent.minDistance, min(currentZoomDistance, parent.maxDistance))
+
+            if movedDistance < 30 {
+                recenterMap(on: mapView, to: userCenter, zoomDistance: clampedZoomDistance)
+                return
+            }
 
             self.lastUserCenter = userCenter
+            recenterMap(on: mapView, to: userCenter, zoomDistance: clampedZoomDistance)
+        }
+
+        private func recenterMap(on mapView: MKMapView, to userCenter: CLLocationCoordinate2D, zoomDistance: CLLocationDistance) {
+            isRecenteringCamera = true
+            mapView.setCenter(userCenter, animated: false)
+            mapView.camera.centerCoordinateDistance = zoomDistance
+            isRecenteringCamera = false
         }
 
         func refreshOverlays(on mapView: MKMapView, center: CLLocationCoordinate2D, heatmapCounts: [String: Int]) {
@@ -770,6 +785,15 @@ struct GridMapView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            guard !isRecenteringCamera else { return }
+
+            let liveCenter = parent.center
+            let mapCenterOffset = MKMapPoint(mapView.centerCoordinate).distance(to: MKMapPoint(liveCenter))
+            if mapCenterOffset > 2 {
+                let clampedZoomDistance = max(parent.minDistance, min(mapView.camera.centerCoordinateDistance, parent.maxDistance))
+                recenterMap(on: mapView, to: liveCenter, zoomDistance: clampedZoomDistance)
+            }
+
             let anchoredCenter = GridMapView.cellCenterCoordinate(for: parent.center)
             refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: parent.heatmapCounts)
         }
