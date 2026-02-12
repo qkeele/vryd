@@ -739,9 +739,9 @@ struct GridMapView: UIViewRepresentable {
 
         func overlays(active coordinate: CLLocationCoordinate2D, heatmapCounts: [String: Int], showHeatmap: Bool) -> [MKPolygon] {
             let activeIndices = SpatialGrid.cellIndices(for: coordinate)
-            let generationRadius = 5 // 11x11 generated grid with hidden buffer
-            let visibleMinOffset = -5
-            let visibleMaxOffset = 4 // 10x10 visible interior
+            let visibleRadius = 5 // 11x11 visible interior centered on active cell
+            let hiddenBufferCells = 2 // extra off-screen cells so swipes don't expose the grid edge
+            let generationRadius = visibleRadius + hiddenBufferCells // 15x15 generated grid
             var result: [MKPolygon] = []
 
             for y in (activeIndices.y - generationRadius)...(activeIndices.y + generationRadius) {
@@ -753,7 +753,7 @@ struct GridMapView: UIViewRepresentable {
 
                     polygon.cellID = SpatialGrid.cellID(x: x, y: y)
                     polygon.isActive = (x == activeIndices.x && y == activeIndices.y)
-                    polygon.isVisible = (visibleMinOffset...visibleMaxOffset).contains(xOffset) && (visibleMinOffset...visibleMaxOffset).contains(yOffset)
+                    polygon.isVisible = abs(xOffset) <= visibleRadius && abs(yOffset) <= visibleRadius
                     polygon.hasComments = polygon.isVisible && showHeatmap && (heatmapCounts[polygon.cellID] ?? 0) > 0
                     result.append(polygon)
                 }
