@@ -1,0 +1,232 @@
+begin;
+
+-- Vryd Supabase bootstrap (single paste SQL)
+-- Creates tables, indexes, triggers, functions, RLS, and grants.
+
+create extension if not exists "pgcrypto";
+
+-- =========================================================
+-- Tables
+-- =========================================================
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  username text unique,
+  email text not null default '',
+  provider text not null default 'apple',
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  constraint profiles_username_format_check check (
+    username is null
+    or (
+      char_length(username) between 3 and 20
+      and username ~ '^[A-Za-z0-9._]+$'
+      and left(username, 1) <> '.'
+      and right(username, 1) <> '.'
+      and position('..' in username) = 0
+    )
+  )
+);
+
+create table if not exists public.messages (
+  id uuid primary key default gen_random_uuid(),
+  author_id uuid not null references public.profiles (id) on delete cascade,
+  text text not null,
+  grid_cell_id text not null,
+  parent_id uuid references public.messages (id) on delete cascade,
+  created_at timestamptz not null default timezone('utc', now()),
+  updated_at timestamptz not null default timezone('utc', now()),
+  constraint messages_text_length_check check (char_length(trim(text)) between 1 and 2000)
+);
+
+create table if not exists public.message_likes (
+  message_id uuid not null references public.messages (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default timezone('utc', now()),
+  primary key (message_id, user_id)
+);
+
+-- =========================================================
+-- Indexes
+-- =========================================================
+
+create index if not exists messages_grid_cell_created_at_idx
+  on public.messages (grid_cell_id, created_at desc);
+
+create index if not exists messages_author_created_at_idx
+  on public.messages (author_id, created_at desc);
+
+create index if not exists messages_parent_id_idx
+  on public.messages (parent_id);
+
+create index if not exists message_likes_user_created_at_idx
+  on public.message_likes (user_id, created_at desc);
+
+-- =========================================================
+-- Trigger helpers
+-- =========================================================
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = timezone('utc', now());
+  return new;
+end;
+$$;
+
+drop trigger if exists profiles_set_updated_at on public.profiles;
+create trigger profiles_set_updated_at
+before update on public.profiles
+for each row execute function public.set_updated_at();
+
+drop trigger if exists messages_set_updated_at on public.messages;
+create trigger messages_set_updated_at
+before update on public.messages
+for each row execute function public.set_updated_at();
+
+-- Auto-create app profile row when auth.users row is created.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email, provider)
+  values (new.id, coalesce(new.email, ''), 'apple')
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+after insert on auth.users
+for each row execute function public.handle_new_user();
+
+-- =========================================================
+-- RLS + policies
+-- =========================================================
+
+alter table public.profiles enable row level security;
+alter table public.messages enable row level security;
+alter table public.message_likes enable row level security;
+
+-- Optionally enforce RLS for table owners as well.
+alter table public.profiles force row level security;
+alter table public.messages force row level security;
+alter table public.message_likes force row level security;
+
+-- Profiles
+
+drop policy if exists "profiles_select_authenticated" on public.profiles;
+create policy "profiles_select_authenticated"
+  on public.profiles
+  for select
+  to authenticated
+  using (true);
+
+drop policy if exists "profiles_insert_self" on public.profiles;
+create policy "profiles_insert_self"
+  on public.profiles
+  for insert
+  to authenticated
+  with check (auth.uid() = id);
+
+drop policy if exists "profiles_update_self" on public.profiles;
+create policy "profiles_update_self"
+  on public.profiles
+  for update
+  to authenticated
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+drop policy if exists "profiles_delete_self" on public.profiles;
+create policy "profiles_delete_self"
+  on public.profiles
+  for delete
+  to authenticated
+  using (auth.uid() = id);
+
+-- Messages
+
+drop policy if exists "messages_select_authenticated" on public.messages;
+create policy "messages_select_authenticated"
+  on public.messages
+  for select
+  to authenticated
+  using (true);
+
+drop policy if exists "messages_insert_self" on public.messages;
+create policy "messages_insert_self"
+  on public.messages
+  for insert
+  to authenticated
+  with check (auth.uid() = author_id);
+
+drop policy if exists "messages_update_self" on public.messages;
+create policy "messages_update_self"
+  on public.messages
+  for update
+  to authenticated
+  using (auth.uid() = author_id)
+  with check (auth.uid() = author_id);
+
+drop policy if exists "messages_delete_self" on public.messages;
+create policy "messages_delete_self"
+  on public.messages
+  for delete
+  to authenticated
+  using (auth.uid() = author_id);
+
+-- Message likes
+
+drop policy if exists "likes_select_authenticated" on public.message_likes;
+create policy "likes_select_authenticated"
+  on public.message_likes
+  for select
+  to authenticated
+  using (true);
+
+drop policy if exists "likes_insert_self" on public.message_likes;
+create policy "likes_insert_self"
+  on public.message_likes
+  for insert
+  to authenticated
+  with check (auth.uid() = user_id);
+
+drop policy if exists "likes_delete_self" on public.message_likes;
+create policy "likes_delete_self"
+  on public.message_likes
+  for delete
+  to authenticated
+  using (auth.uid() = user_id);
+
+-- =========================================================
+-- View
+-- =========================================================
+
+create or replace view public.messages_with_meta as
+select
+  m.id,
+  m.author_id,
+  p.username as author,
+  m.text,
+  m.grid_cell_id,
+  m.parent_id,
+  m.created_at,
+  coalesce(count(ml.user_id), 0)::int as like_count
+from public.messages m
+join public.profiles p on p.id = m.author_id
+left join public.message_likes ml on ml.message_id = m.id
+group by m.id, p.username;
+
+grant usage on schema public to anon, authenticated;
+grant select on public.messages_with_meta to anon, authenticated;
+grant select, insert, update, delete on public.profiles to authenticated;
+grant select, insert, update, delete on public.messages to authenticated;
+grant select, insert, delete on public.message_likes to authenticated;
+
+commit;
