@@ -18,14 +18,29 @@ enum BackendError: LocalizedError {
     case invalidUsername
     case usernameTaken
     case notFound
+    case serverUnavailable
 
     var errorDescription: String? {
         switch self {
         case .invalidUsername: return "Username does not match the allowed format."
         case .usernameTaken: return "That username is already taken."
         case .notFound: return "Record not found."
+        case .serverUnavailable: return "Server error. Please try again."
         }
     }
+}
+
+actor UnavailableVrydBackend: VrydBackend {
+    func signInWithApple() async throws -> UserProfile { throw BackendError.serverUnavailable }
+    func isUsernameAvailable(_ username: String) async throws -> Bool { throw BackendError.serverUnavailable }
+    func updateUsername(userID: UUID, username: String) async throws -> UserProfile { throw BackendError.serverUnavailable }
+    func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] { throw BackendError.serverUnavailable }
+    func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage] { throw BackendError.serverUnavailable }
+    func fetchDailyCellCounts(near coordinate: CLLocationCoordinate2D, radiusMeters: Double, date: Date) async throws -> [String : Int] { throw BackendError.serverUnavailable }
+    func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage { throw BackendError.serverUnavailable }
+    func like(messageID: UUID, by userID: UUID) async throws { throw BackendError.serverUnavailable }
+    func delete(messageID: UUID, by userID: UUID) async throws { throw BackendError.serverUnavailable }
+    func deleteAccount(userID: UUID) async throws { throw BackendError.serverUnavailable }
 }
 
 actor LiveVrydBackend: VrydBackend {

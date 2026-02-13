@@ -331,8 +331,8 @@ private struct LikeRow: Decodable {
 enum BackendFactory {
     static func makeBackend() -> VrydBackend {
         guard SupabaseConfig.isConfigured, let url = SupabaseConfig.url else {
-            print("⚠️ Supabase is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in your scheme environment or Info.plist.")
-            return LiveVrydBackend()
+            print("⚠️ Supabase is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in Info.plist.")
+            return UnavailableVrydBackend()
         }
 
         let client = SupabaseClient(supabaseURL: url, supabaseKey: SupabaseConfig.anonKey)

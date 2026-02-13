@@ -65,7 +65,7 @@ final class AppViewModel: ObservableObject {
         locationManager.onDenied = { [weak self] in
             Task { @MainActor in
                 self?.locationState = .denied
-                self?.statusMessage = "Location is required to see your nearby grid."
+                self?.statusMessage = "Please share your location to use Vryd."
             }
         }
     }
@@ -103,7 +103,7 @@ final class AppViewModel: ObservableObject {
             authFlowStep = .username
             statusMessage = ""
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -122,7 +122,7 @@ final class AppViewModel: ObservableObject {
             statusMessage = ""
             authFlowStep = .appleSignIn
         } catch {
-            statusMessage = error.localizedDescription
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -152,7 +152,7 @@ final class AppViewModel: ObservableObject {
             await refreshProfile()
             await refreshHeatmapData()
         } catch {
-            statusMessage = "Could not send comment."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -163,7 +163,7 @@ final class AppViewModel: ObservableObject {
             await refreshGridData()
             await refreshHeatmapData()
         } catch {
-            statusMessage = "Could not like comment."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -175,7 +175,7 @@ final class AppViewModel: ObservableObject {
             await refreshProfile()
             await refreshHeatmapData()
         } catch {
-            statusMessage = "Could not delete comment."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -192,7 +192,7 @@ final class AppViewModel: ObservableObject {
             screen = .main
             statusMessage = "Account deleted."
         } catch {
-            statusMessage = "Could not delete account."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -201,7 +201,7 @@ final class AppViewModel: ObservableObject {
         do {
             gridMessages = try await backend.fetchMessages(in: cell, viewerID: user.id)
         } catch {
-            statusMessage = "Could not load comments."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -210,7 +210,7 @@ final class AppViewModel: ObservableObject {
         do {
             profileMessages = try await backend.fetchProfileMessages(for: user.id)
         } catch {
-            statusMessage = "Could not load profile comments."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
@@ -219,12 +219,20 @@ final class AppViewModel: ObservableObject {
         do {
             heatmapCounts = try await backend.fetchDailyCellCounts(near: coordinate, radiusMeters: 750, date: .now)
         } catch {
-            statusMessage = "Could not load heatmap data."
+            statusMessage = userFacingErrorMessage(error)
         }
     }
 
     func bootstrap() {
         requestLocation()
+    }
+
+    private func userFacingErrorMessage(_ error: Error) -> String {
+        if let backendError = error as? BackendError {
+            return backendError.localizedDescription
+        }
+
+        return "Server error. Please try again."
     }
 }
 
@@ -339,53 +347,77 @@ struct AuthOnboardingFlowView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Button("Not now") { dismiss() }
-                .font(.footnote)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.black)
 
             Text("Set up your account")
                 .font(.title.bold())
 
-            if viewModel.authFlowStep == .username {
-                Text("Choose a username")
-                    .foregroundStyle(.secondary)
+            Text("Choose a username to continue.")
+                .foregroundStyle(.secondary)
 
+            VStack(alignment: .leading, spacing: 10) {
                 TextField("username", text: $viewModel.usernameDraft)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                    .textFieldStyle(.roundedBorder)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                 Text(UsernameRules.helperText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Button("Continue") { Task { await viewModel.continueToAppleStep() } }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
-            } else {
-                Text("Username locked in: @\(viewModel.usernameDraft)")
-                    .foregroundStyle(.secondary)
-
-                Button(action: { Task { await viewModel.signInWithApple() } }) {
-                    Label("Sign in with Apple", systemImage: "apple.logo")
+                if viewModel.authFlowStep == .username {
+                    Button("Continue") { Task { await viewModel.continueToAppleStep() } }
                         .font(.headline)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(.black)
                         .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.black)
+                        .clipShape(Capsule())
+                        .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
+                } else {
+                    Text("Username locked in: @\(viewModel.usernameDraft)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+
+                    Button(action: { Task { await viewModel.signInWithApple() } }) {
+                        Label("Sign in with Apple", systemImage: "apple.logo")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color.black)
+                            .foregroundStyle(.white)
+                            .clipShape(Capsule())
+                    }
                 }
-                .padding(.top, 8)
             }
+            .padding(16)
+            .background(Color.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.black.opacity(0.12), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
             if !viewModel.statusMessage.isEmpty {
                 Text(viewModel.statusMessage)
                     .font(.footnote)
                     .foregroundStyle(.red)
             }
+
             Spacer()
         }
         .padding(20)
+        .background(Color.white)
     }
 }
 
@@ -394,19 +426,25 @@ struct LocationPromptView: View {
 
     var body: some View {
         VStack(spacing: 14) {
-            Image(systemName: "location.circle.fill")
+            Image(systemName: "location.slash.circle.fill")
                 .font(.system(size: 46))
-            Text("Enable location")
+            Text("Location needed")
                 .font(.title2.weight(.bold))
-            Text("We only use your location to compute your current grid cell.")
+
+            Text("Please share your location to use Vryd.")
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            Button("Allow Location", action: viewModel.requestLocation)
-                .buttonStyle(.borderedProminent)
+            Button("Try Again", action: viewModel.requestLocation)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(Color.black)
+                .clipShape(Capsule())
 
             if viewModel.locationState == .denied {
-                Text("Location is required for the map experience. Enable it in Settings.")
+                Text("Location access is currently off. Enable location permissions for Vryd in Settings and try again.")
                     .font(.footnote)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
