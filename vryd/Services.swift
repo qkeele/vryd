@@ -3,6 +3,7 @@ import CoreLocation
 
 protocol VrydBackend {
     func signInWithApple() async throws -> UserProfile
+    func isUsernameAvailable(_ username: String) async throws -> Bool
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage]
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage]
@@ -15,11 +16,13 @@ protocol VrydBackend {
 
 enum BackendError: LocalizedError {
     case invalidUsername
+    case usernameTaken
     case notFound
 
     var errorDescription: String? {
         switch self {
         case .invalidUsername: return "Username does not match the allowed format."
+        case .usernameTaken: return "That username is already taken."
         case .notFound: return "Record not found."
         }
     }
@@ -54,6 +57,7 @@ actor LiveVrydBackend: VrydBackend {
 
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile {
         guard UsernameRules.isValid(username) else { throw BackendError.invalidUsername }
+        guard try await isUsernameAvailable(username) else { throw BackendError.usernameTaken }
         guard var user = users[userID] else { throw BackendError.notFound }
         user.username = username
         users[userID] = user
@@ -72,6 +76,11 @@ actor LiveVrydBackend: VrydBackend {
         }
 
         return user
+    }
+
+    func isUsernameAvailable(_ username: String) async throws -> Bool {
+        let normalized = username.lowercased()
+        return !users.values.contains(where: { $0.username.lowercased() == normalized })
     }
 
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] {

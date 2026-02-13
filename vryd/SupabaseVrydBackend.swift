@@ -34,17 +34,42 @@ actor SupabaseVrydBackend: VrydBackend {
 
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile {
         guard UsernameRules.isValid(username) else { throw BackendError.invalidUsername }
+        guard try await isUsernameAvailable(username) else { throw BackendError.usernameTaken }
 
-        let updated: ProfileRow = try await client
+        do {
+            let updated: ProfileRow = try await client
+                .from("profiles")
+                .update(["username": username])
+                .eq("id", value: userID.uuidString)
+                .select()
+                .single()
+                .execute()
+                .value
+
+            return updated.asUserProfile
+        } catch {
+            // Defensive guard: if another user claims the name between pre-check and update.
+            if !(try await isUsernameAvailable(username)) {
+                throw BackendError.usernameTaken
+            }
+
+            throw error
+        }
+    }
+
+    func isUsernameAvailable(_ username: String) async throws -> Bool {
+        guard UsernameRules.isValid(username) else { return false }
+
+        let normalized = username.lowercased()
+        let rows: [ProfileLookupRow] = try await client
             .from("profiles")
-            .update(["username": username])
-            .eq("id", value: userID.uuidString)
-            .select()
-            .single()
+            .select("id, username")
+            .ilike("username", pattern: normalized)
+            .limit(1)
             .execute()
             .value
 
-        return updated.asUserProfile
+        return rows.isEmpty
     }
 
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] {
@@ -229,6 +254,11 @@ private struct ProfileRow: Decodable {
     }
 }
 
+private struct ProfileLookupRow: Decodable {
+    let id: UUID
+    let username: String?
+}
+
 private struct MessageInsertRow: Encodable {
     let authorID: String
     let text: String
@@ -301,7 +331,8 @@ private struct LikeRow: Decodable {
 enum BackendFactory {
     static func makeBackend() -> VrydBackend {
         guard SupabaseConfig.isConfigured, let url = SupabaseConfig.url else {
-            fatalError("Supabase is not configured. Fill vryd/SupabaseConfig.swift with your project URL and anon key.")
+            print("⚠️ Supabase is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in your scheme environment or Info.plist.")
+            return LiveVrydBackend()
         }
 
         let client = SupabaseClient(supabaseURL: url, supabaseKey: SupabaseConfig.anonKey)

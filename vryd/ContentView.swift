@@ -6,10 +6,13 @@ import Combine
 @MainActor
 final class AppViewModel: ObservableObject {
     enum Screen {
-        case signIn
-        case username
         case location
         case main
+    }
+
+    enum AuthFlowStep {
+        case username
+        case appleSignIn
     }
 
     enum LocationGateState {
@@ -18,9 +21,11 @@ final class AppViewModel: ObservableObject {
         case ready
     }
 
-    @Published var screen: Screen = .signIn
+    @Published var screen: Screen = .location
     @Published var statusMessage = ""
     @Published var usernameDraft = ""
+    @Published var authFlowStep: AuthFlowStep = .username
+    @Published var showingAuthFlow = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var locationState: LocationGateState = .idle
     @Published var gridMessages: [ChatMessage] = []
@@ -79,24 +84,52 @@ final class AppViewModel: ObservableObject {
     }
 
     func signInWithApple() async {
-        do {
-            let user = try await backend.signInWithApple()
-            activeUser = user
-            screen = .username
-        } catch {
-            statusMessage = "Apple sign in failed."
+        let desiredUsername = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard UsernameRules.isValid(desiredUsername) else {
+            statusMessage = UsernameRules.helperText
+            return
         }
-    }
 
-    func finishUsername() async {
-        guard let user = activeUser else { return }
         do {
-            let updated = try await backend.updateUsername(userID: user.id, username: usernameDraft)
+            guard try await backend.isUsernameAvailable(desiredUsername) else {
+                statusMessage = BackendError.usernameTaken.localizedDescription
+                return
+            }
+
+            let user = try await backend.signInWithApple()
+            let updated = try await backend.updateUsername(userID: user.id, username: desiredUsername)
             activeUser = updated
-            screen = .location
+            showingAuthFlow = false
+            authFlowStep = .username
+            statusMessage = ""
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    func continueToAppleStep() async {
+        let trimmed = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard UsernameRules.isValid(trimmed) else {
+            statusMessage = UsernameRules.helperText
+            return
+        }
+
+        do {
+            guard try await backend.isUsernameAvailable(trimmed) else {
+                statusMessage = BackendError.usernameTaken.localizedDescription
+                return
+            }
+            statusMessage = ""
+            authFlowStep = .appleSignIn
+        } catch {
+            statusMessage = error.localizedDescription
+        }
+    }
+
+    func beginAuthFlow() {
+        statusMessage = ""
+        authFlowStep = .username
+        showingAuthFlow = true
     }
 
     func requestLocation() {
@@ -156,7 +189,7 @@ final class AppViewModel: ObservableObject {
             gridMessages = []
             profileMessages = []
             heatmapCounts = [:]
-            screen = .signIn
+            screen = .main
             statusMessage = "Account deleted."
         } catch {
             statusMessage = "Could not delete account."
@@ -188,6 +221,10 @@ final class AppViewModel: ObservableObject {
         } catch {
             statusMessage = "Could not load heatmap data."
         }
+    }
+
+    func bootstrap() {
+        requestLocation()
     }
 }
 
@@ -240,16 +277,13 @@ struct ContentView: View {
     var body: some View {
         Group {
             switch viewModel.screen {
-            case .signIn:
-                AppleSignInView(viewModel: viewModel)
-            case .username:
-                UsernameOnboardingView(viewModel: viewModel)
             case .location:
                 LocationPromptView(viewModel: viewModel)
             case .main:
                 mapScreen
             }
         }
+        .task { viewModel.bootstrap() }
     }
 
     private var mapScreen: some View {
@@ -265,16 +299,31 @@ struct ContentView: View {
             VStack {
                 HStack {
                     Spacer()
-                    FloatingCircleButton(systemName: "person.fill") { showingProfile = true }
+                    FloatingCircleButton(systemName: "person.fill") {
+                        guard viewModel.activeUser != nil else {
+                            viewModel.beginAuthFlow()
+                            return
+                        }
+                        showingProfile = true
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
 
                 Spacer()
 
-                FloatingCircleButton(systemName: "bubble.left.and.bubble.right.fill") { showingGridChat = true }
+                FloatingCircleButton(systemName: "bubble.left.and.bubble.right.fill") {
+                    guard viewModel.activeUser != nil else {
+                        viewModel.beginAuthFlow()
+                        return
+                    }
+                    showingGridChat = true
+                }
                     .padding(.bottom, 26)
             }
+        }
+        .fullScreenCover(isPresented: $viewModel.showingAuthFlow) {
+            AuthOnboardingFlowView(viewModel: viewModel)
         }
         .fullScreenCover(isPresented: $showingGridChat) {
             GridChatSheet(viewModel: viewModel)
@@ -285,62 +334,49 @@ struct ContentView: View {
     }
 }
 
-struct AppleSignInView: View {
+struct AuthOnboardingFlowView: View {
     @ObservedObject var viewModel: AppViewModel
-
-    var body: some View {
-        VStack(spacing: 18) {
-            Spacer()
-            Text("VRYD")
-                .font(.system(size: 48, weight: .heavy, design: .rounded))
-            Text("Talk to people in your exact 100m square.")
-                .foregroundStyle(.secondary)
-
-            Button(action: { Task { await viewModel.signInWithApple() } }) {
-                Label("Sign in with Apple", systemImage: "apple.logo")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(.black)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .padding(.top, 14)
-
-            if !viewModel.statusMessage.isEmpty {
-                Text(viewModel.statusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-            Spacer()
-        }
-        .padding(20)
-    }
-}
-
-struct UsernameOnboardingView: View {
-    @ObservedObject var viewModel: AppViewModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose a username")
-                .font(.title.bold())
-            Text("Instagram-style rules")
-                .foregroundStyle(.secondary)
-
-            TextField("username", text: $viewModel.usernameDraft)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .textFieldStyle(.roundedBorder)
-
-            Text(UsernameRules.helperText)
+            Button("Not now") { dismiss() }
                 .font(.footnote)
-                .foregroundStyle(.secondary)
 
-            Button("Continue") { Task { await viewModel.finishUsername() } }
-                .buttonStyle(.borderedProminent)
-                .disabled(!UsernameRules.isValid(viewModel.usernameDraft))
+            Text("Set up your account")
+                .font(.title.bold())
+
+            if viewModel.authFlowStep == .username {
+                Text("Choose a username")
+                    .foregroundStyle(.secondary)
+
+                TextField("username", text: $viewModel.usernameDraft)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.roundedBorder)
+
+                Text(UsernameRules.helperText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Button("Continue") { Task { await viewModel.continueToAppleStep() } }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
+            } else {
+                Text("Username locked in: @\(viewModel.usernameDraft)")
+                    .foregroundStyle(.secondary)
+
+                Button(action: { Task { await viewModel.signInWithApple() } }) {
+                    Label("Sign in with Apple", systemImage: "apple.logo")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(.black)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .padding(.top, 8)
+            }
 
             if !viewModel.statusMessage.isEmpty {
                 Text(viewModel.statusMessage)
@@ -844,4 +880,3 @@ final class HeatPolygon: MKPolygon, @unchecked Sendable {
         "\(cellID):\(isActive ? 1 : 0):\(isVisible ? 1 : 0):\(hasComments ? 1 : 0)"
     }
 }
-
