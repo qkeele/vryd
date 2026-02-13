@@ -46,7 +46,7 @@ final class AppViewModel: ObservableObject {
             case .oldest:
                 return "Oldest"
             }
-        }
+        })
     }
 
     @Published var screen: Screen = .main
@@ -113,7 +113,7 @@ final class AppViewModel: ObservableObject {
                 self?.locationState = .denied
                 self?.statusMessage = "Location is off. Enable it in Settings to use grid features."
             }
-        }
+        })
     }
 
     var activeCell: GridCell? {
