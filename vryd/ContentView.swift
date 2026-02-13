@@ -129,10 +129,10 @@ final class AppViewModel: ObservableObject {
         switch topLevelSort {
         case .likes:
             return topLevelMessages.sorted {
-                if $0.likeCount == $1.likeCount {
+                if $0.score == $1.score {
                     return $0.createdAt > $1.createdAt
                 }
-                return $0.likeCount > $1.likeCount
+                return $0.score > $1.score
             }
         case .newest:
             return topLevelMessages.sorted { $0.createdAt > $1.createdAt }
@@ -165,6 +165,20 @@ final class AppViewModel: ObservableObject {
             current = byID[parentID]
         }
         return current?.id
+    }
+
+
+    func depth(for message: ChatMessage) -> Int {
+        let byID = Dictionary(uniqueKeysWithValues: gridMessages.map { ($0.id, $0) })
+        var level = 0
+        var current = message
+
+        while let parentID = current.parentID, let parent = byID[parentID] {
+            level += 1
+            current = parent
+        }
+
+        return level
     }
 
     func signInWithApple(idToken: String, nonce: String) async {
@@ -299,10 +313,11 @@ final class AppViewModel: ObservableObject {
         }
     }
 
-    func like(_ message: ChatMessage) async {
+    func vote(_ message: ChatMessage, value: Int) async {
         guard let user = activeUser else { return }
+        let nextVote: Int? = message.userVote == value ? nil : value
         do {
-            try await backend.like(messageID: message.id, by: user.id)
+            try await backend.vote(messageID: message.id, by: user.id, value: nextVote)
             await refreshGridData()
             await refreshHeatmapData()
         } catch {
@@ -806,10 +821,7 @@ struct CloseToolbarButton: ToolbarContent {
 struct GridChatSheet: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var visibleReplyCountByThread: [UUID: Int] = [:]
-    @State private var activeThreadIndex = 0
-
-    private let replyPageSize = 10
+    @State private var selectedThread: ChatMessage?
 
     var body: some View {
         NavigationStack {
@@ -822,40 +834,33 @@ struct GridChatSheet: View {
                 .pickerStyle(.segmented)
                 .padding(.horizontal, 16)
 
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 12) {
-                            ForEach(viewModel.sortedTopLevelMessages) { message in
-                                threadCard(for: message)
-                                    .id(message.id)
-                            }
-
-                            if viewModel.gridMessages.isEmpty {
-                                Text("Nothing to see here yet.")
-                                    .foregroundStyle(.secondary)
-                                    .padding(.top, 16)
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 6)
-                    }
-                    .overlay(alignment: .bottomTrailing) {
-                        if viewModel.sortedTopLevelMessages.count > 1 {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(viewModel.sortedTopLevelMessages) { message in
                             Button {
-                                jumpToNextThread(using: proxy)
+                                selectedThread = message
                             } label: {
-                                Image(systemName: "arrow.down")
-                                    .font(.headline)
-                                    .foregroundStyle(.white)
-                                    .frame(width: 40, height: 40)
-                                    .background(Color.black)
-                                    .clipShape(Circle())
+                                FlatCommentRow(
+                                    message: message,
+                                    canDelete: false,
+                                    upvoteAction: {},
+                                    downvoteAction: {},
+                                    replyAction: {},
+                                    deleteAction: {},
+                                    showReplyCount: viewModel.replyCount(for: message.id),
+                                    compact: true
+                                )
                             }
-                            .padding(.trailing, 20)
-                            .padding(.bottom, 12)
+                            .buttonStyle(.plain)
+                        }
+
+                        if viewModel.gridMessages.isEmpty {
+                            Text("Nothing to see here yet.")
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 16)
                         }
                     }
+                    .padding(.horizontal, 16)
                 }
 
                 composer
@@ -865,74 +870,126 @@ struct GridChatSheet: View {
                 CloseToolbarButton { dismiss() }
             }
         }
+        .sheet(item: $selectedThread) { thread in
+            ThreadDetailView(viewModel: viewModel, topLevel: thread)
+        }
         .task {
             await viewModel.refreshGridData()
             await viewModel.refreshHeatmapData()
         }
     }
 
-    private func threadCard(for topLevel: ChatMessage) -> some View {
-        let replies = viewModel.flattenedReplies(for: topLevel.id)
-        let visibleCount = visibleReplyCount(for: topLevel.id, total: replies.count)
-        let visibleReplies = Array(replies.prefix(visibleCount))
+    private var composer: some View {
+        HStack(spacing: 10) {
+            TextField("Write a post…", text: $viewModel.draftMessage, axis: .vertical)
+                .lineLimit(1...4)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Color.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-        return VStack(alignment: .leading, spacing: 10) {
-            FlatCommentRow(
-                message: topLevel,
-                canDelete: viewModel.activeUser?.id == topLevel.authorID,
-                likeAction: { Task { await viewModel.like(topLevel) } },
-                replyAction: {
+            Button("Post") { Task { await viewModel.postMessage() } }
+                .font(.headline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+                .background(Color.black)
+                .clipShape(Capsule())
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+}
+
+struct ThreadDetailView: View {
+    enum CommentSort: String, CaseIterable, Identifiable {
+        case top = "Top"
+        case newest = "Newest"
+        case oldest = "Oldest"
+        var id: String { rawValue }
+    }
+
+    @ObservedObject var viewModel: AppViewModel
+    @Environment(\.dismiss) private var dismiss
+    let topLevel: ChatMessage
+    @State private var commentSort: CommentSort = .top
+    @State private var visibleReplyCountByParent: [UUID: Int] = [:]
+
+    private let pageSize = 10
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 8) {
+                FlatCommentRow(message: topLevel, canDelete: viewModel.activeUser?.id == topLevel.authorID, upvoteAction: { Task { await viewModel.vote(topLevel, value: 1) } }, downvoteAction: { Task { await viewModel.vote(topLevel, value: -1) } }, replyAction: {
                     viewModel.replyTo = topLevel
                     viewModel.draftMessage = "@\(resolvedAuthorName(for: topLevel)) "
-                },
-                deleteAction: { Task { await viewModel.delete(topLevel) } },
-                showReplyCount: replies.count
-            )
+                }, deleteAction: { Task { await viewModel.delete(topLevel) } }, showReplyCount: viewModel.replyCount(for: topLevel.id), compact: true)
+                .padding(.horizontal, 16)
 
-            if !visibleReplies.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(visibleReplies) { reply in
-                        FlatCommentRow(
-                            message: reply,
-                            canDelete: viewModel.activeUser?.id == reply.authorID,
-                            likeAction: { Task { await viewModel.like(reply) } },
-                            replyAction: {
-                                viewModel.replyTo = topLevel
-                                viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
-                            },
-                            deleteAction: { Task { await viewModel.delete(reply) } },
-                            showReplyCount: nil,
-                            isReply: true
-                        )
+                Picker("Sort comments", selection: $commentSort) {
+                    ForEach(CommentSort.allCases) { option in
+                        Text(option.rawValue).tag(option)
                     }
                 }
-            }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
 
-            if replies.count > visibleCount {
-                Button("See \(replies.count - visibleCount) more replies") {
-                    visibleReplyCountByThread[topLevel.id] = min(replies.count, visibleCount + replyPageSize)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        nestedReplies(parentID: topLevel.id, depth: 1)
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .buttonStyle(.plain)
+
+                composer
+            }
+            .toolbar {
+                CloseToolbarButton { dismiss() }
             }
         }
-        .padding(12)
-        .background(Color.black.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
-    private func visibleReplyCount(for threadID: UUID, total: Int) -> Int {
-        let initial = min(replyPageSize, total)
-        return min(total, visibleReplyCountByThread[threadID] ?? initial)
+    @ViewBuilder
+    private func nestedReplies(parentID: UUID, depth: Int) -> some View {
+        let replies = sortedReplies(for: parentID)
+        let visibleCount = visibleReplyCountByParent[parentID] ?? 0
+
+        if visibleCount == 0, !replies.isEmpty {
+            Button("Show \(min(pageSize, replies.count)) of \(replies.count) repl\(replies.count == 1 ? "y" : "ies")") {
+                visibleReplyCountByParent[parentID] = min(pageSize, replies.count)
+            }
+            .font(.caption)
+        }
+
+        ForEach(Array(replies.prefix(visibleCount))) { reply in
+            FlatCommentRow(message: reply, canDelete: viewModel.activeUser?.id == reply.authorID, upvoteAction: { Task { await viewModel.vote(reply, value: 1) } }, downvoteAction: { Task { await viewModel.vote(reply, value: -1) } }, replyAction: {
+                viewModel.replyTo = reply
+                viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
+            }, deleteAction: { Task { await viewModel.delete(reply) } }, showReplyCount: nil, compact: true, indentation: depth)
+            nestedReplies(parentID: reply.id, depth: depth + 1)
+        }
+
+        if replies.count > visibleCount {
+            Button("Show \(min(pageSize, replies.count - visibleCount)) more") {
+                visibleReplyCountByParent[parentID] = min(replies.count, visibleCount + pageSize)
+            }
+            .font(.caption)
+        }
     }
 
-    private func jumpToNextThread(using proxy: ScrollViewProxy) {
-        let threads = viewModel.sortedTopLevelMessages
-        guard !threads.isEmpty else { return }
-        activeThreadIndex = (activeThreadIndex + 1) % threads.count
-        withAnimation(.easeInOut) {
-            proxy.scrollTo(threads[activeThreadIndex].id, anchor: .top)
+    private func sortedReplies(for parentID: UUID) -> [ChatMessage] {
+        let replies = viewModel.replies(for: parentID)
+        switch commentSort {
+        case .top:
+            return replies.sorted { $0.score > $1.score }
+        case .newest:
+            return replies.sorted { $0.createdAt > $1.createdAt }
+        case .oldest:
+            return replies.sorted { $0.createdAt < $1.createdAt }
         }
     }
 
@@ -942,107 +999,108 @@ struct GridChatSheet: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 6) {
             if let reply = viewModel.replyTo {
                 HStack {
                     Text("Replying to @\(resolvedAuthorName(for: reply))")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Cancel") {
-                        viewModel.replyTo = nil
-                        viewModel.draftMessage = ""
-                    }
-                    .font(.caption)
+                    Button("Cancel") { viewModel.replyTo = nil; viewModel.draftMessage = "" }
+                        .font(.caption)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 16)
             }
 
             HStack(spacing: 10) {
-                TextField("Write a message…", text: $viewModel.draftMessage, axis: .vertical)
-                    .lineLimit(1...4)
+                TextField("Write a reply…", text: $viewModel.draftMessage, axis: .vertical)
+                    .lineLimit(1...3)
                     .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color.white)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.black.opacity(0.15), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                Button("Post") { Task { await viewModel.postMessage() } }
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .background(Color.black)
-                    .clipShape(Capsule())
+                    .padding(.vertical, 10)
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.15)))
+                Button("Reply") { Task { await viewModel.postMessage() } }
+                    .font(.subheadline.weight(.semibold))
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 10)
+            .padding(.bottom, 8)
         }
-        .background(Color.white)
     }
 }
 
 struct FlatCommentRow: View {
     let message: ChatMessage
     let canDelete: Bool
-    let likeAction: () -> Void
+    let upvoteAction: () -> Void
+    let downvoteAction: () -> Void
     let replyAction: () -> Void
     let deleteAction: () -> Void
     let showReplyCount: Int?
-    var isReply = false
+    var compact = false
+    var indentation = 0
 
     private var authorLabel: String {
         let trimmed = message.author.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty || trimmed == "unknown" ? "[deleted]" : "@\(trimmed)"
     }
 
+    private var relativeTime: String {
+        let seconds = Int(Date().timeIntervalSince(message.createdAt))
+        if seconds < 60 { return "\(max(1, seconds))s ago" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h ago" }
+        let days = hours / 24
+        if days < 7 { return "\(days)d ago" }
+        let weeks = days / 7
+        if weeks < 52 { return "\(weeks)w ago" }
+        return "\(weeks / 52)y ago"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(authorLabel)
-                .font(.caption.weight(.semibold))
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(authorLabel) • \(relativeTime)")
+                .font(.caption)
                 .foregroundStyle(.secondary)
 
             Text(message.text)
-                .foregroundStyle(.black)
+                .font(compact ? .subheadline : .body)
 
-            if let showReplyCount {
-                Text("\(showReplyCount) repl\(showReplyCount == 1 ? "y" : "ies")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 14) {
-                Text(message.createdAt.formatted(date: .omitted, time: .shortened))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button(action: likeAction) {
-                    Label("\(message.likeCount)", systemImage: message.userHasLiked ? "heart.fill" : "heart")
+            HStack(spacing: 12) {
+                Button(action: upvoteAction) {
+                    Label("\(message.upvoteCount)", systemImage: message.userVote == 1 ? "arrow.up.circle.fill" : "arrow.up.circle")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.black)
-                .disabled(message.userHasLiked)
+
+                Button(action: downvoteAction) {
+                    Label("\(message.downvoteCount)", systemImage: message.userVote == -1 ? "arrow.down.circle.fill" : "arrow.down.circle")
+                }
+                .buttonStyle(.plain)
+
+                Text("Score \(message.score)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 Button("Reply", action: replyAction)
                     .font(.caption)
                     .buttonStyle(.plain)
-                    .foregroundStyle(.black)
 
-                Spacer()
-
-                if canDelete {
-                    Button("Delete", action: deleteAction)
+                if let showReplyCount {
+                    Text("\(showReplyCount) repl\(showReplyCount == 1 ? "y" : "ies")")
                         .font(.caption)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.secondary)
                 }
             }
             .font(.caption)
         }
-        .padding(.leading, isReply ? 6 : 0)
+        .padding(.leading, CGFloat(indentation * 12))
+        .padding(8)
+        .background(Color.black.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contextMenu {
+            if canDelete {
+                Button("Delete", role: .destructive, action: deleteAction)
+            }
+        }
     }
 }
 

@@ -92,9 +92,8 @@ actor SupabaseVrydBackend: VrydBackend {
         return try await withThrowingTaskGroup(of: ChatMessage.self) { group in
             for row in rows {
                 group.addTask {
-                    let hasLiked = try await self.hasUserLiked(messageID: row.id, userID: viewerID)
-                    let likeCount = try await self.likeCount(for: row.id)
-                    return row.asChatMessage(userHasLiked: hasLiked, likeCount: likeCount)
+                    let voteSummary = try await self.voteSummary(for: row.id, viewerID: viewerID)
+                    return row.asChatMessage(upvoteCount: voteSummary.upvotes, downvoteCount: voteSummary.downvotes, userVote: voteSummary.userVote)
                 }
             }
 
@@ -118,8 +117,8 @@ actor SupabaseVrydBackend: VrydBackend {
         return try await withThrowingTaskGroup(of: ChatMessage.self) { group in
             for row in rows {
                 group.addTask {
-                    let likeCount = try await self.likeCount(for: row.id)
-                    return row.asChatMessage(userHasLiked: false, likeCount: likeCount)
+                    let voteSummary = try await self.voteSummary(for: row.id, viewerID: userID)
+                    return row.asChatMessage(upvoteCount: voteSummary.upvotes, downvoteCount: voteSummary.downvotes, userVote: voteSummary.userVote)
                 }
             }
 
@@ -173,14 +172,24 @@ actor SupabaseVrydBackend: VrydBackend {
             .execute()
             .value
 
-        return inserted.asChatMessage(author: user.username, userHasLiked: false, likeCount: 0)
+        return inserted.asChatMessage(author: user.username, upvoteCount: 0, downvoteCount: 0, userVote: nil)
     }
 
-    func like(messageID: UUID, by userID: UUID) async throws {
-        _ = try await client
-            .from("message_likes")
-            .upsert(["message_id": messageID.uuidString, "user_id": userID.uuidString], onConflict: "message_id,user_id")
-            .execute()
+    func vote(messageID: UUID, by userID: UUID, value: Int?) async throws {
+        if let value {
+            guard value == 1 || value == -1 else { return }
+            _ = try await client
+                .from("message_votes")
+                .upsert(["message_id": messageID.uuidString, "user_id": userID.uuidString, "vote_value": value], onConflict: "message_id,user_id")
+                .execute()
+        } else {
+            _ = try await client
+                .from("message_votes")
+                .delete()
+                .eq("message_id", value: messageID.uuidString)
+                .eq("user_id", value: userID.uuidString)
+                .execute()
+        }
     }
 
     func delete(messageID: UUID, by userID: UUID) async throws {
@@ -215,28 +224,18 @@ actor SupabaseVrydBackend: VrydBackend {
     }
 
 
-    private func likeCount(for messageID: UUID) async throws -> Int {
-        let rows: [LikeRow] = try await client
-            .from("message_likes")
-            .select("message_id")
+    private func voteSummary(for messageID: UUID, viewerID: UUID) async throws -> (upvotes: Int, downvotes: Int, userVote: Int?) {
+        let rows: [VoteRow] = try await client
+            .from("message_votes")
+            .select("user_id, vote_value")
             .eq("message_id", value: messageID.uuidString)
             .execute()
             .value
 
-        return rows.count
-    }
-
-    private func hasUserLiked(messageID: UUID, userID: UUID) async throws -> Bool {
-        let rows: [LikeRow] = try await client
-            .from("message_likes")
-            .select("message_id")
-            .eq("message_id", value: messageID.uuidString)
-            .eq("user_id", value: userID.uuidString)
-            .limit(1)
-            .execute()
-            .value
-
-        return !rows.isEmpty
+        let upvotes = rows.filter { $0.voteValue == 1 }.count
+        let downvotes = rows.filter { $0.voteValue == -1 }.count
+        let userVote = rows.first(where: { $0.userID == viewerID })?.voteValue
+        return (upvotes, downvotes, userVote)
     }
 }
 
@@ -304,7 +303,7 @@ private struct MessageRow: Decodable {
         case profiles
     }
 
-    func asChatMessage(userHasLiked: Bool, likeCount: Int) -> ChatMessage {
+    func asChatMessage(upvoteCount: Int, downvoteCount: Int, userVote: Int?) -> ChatMessage {
         let resolvedAuthor = profiles?.username ?? "[deleted]"
         return ChatMessage(
             id: id,
@@ -314,8 +313,9 @@ private struct MessageRow: Decodable {
             createdAt: createdAt,
             gridCellID: gridCellID,
             parentID: parentID,
-            likeCount: likeCount,
-            userHasLiked: userHasLiked
+            upvoteCount: upvoteCount,
+            downvoteCount: downvoteCount,
+            userVote: userVote
         )
     }
 }
@@ -337,7 +337,7 @@ private struct MessageInsertResultRow: Decodable {
         case createdAt = "created_at"
     }
 
-    func asChatMessage(author: String, userHasLiked: Bool, likeCount: Int) -> ChatMessage {
+    func asChatMessage(author: String, upvoteCount: Int, downvoteCount: Int, userVote: Int?) -> ChatMessage {
         ChatMessage(
             id: id,
             authorID: authorID,
@@ -346,8 +346,9 @@ private struct MessageInsertResultRow: Decodable {
             createdAt: createdAt,
             gridCellID: gridCellID,
             parentID: parentID,
-            likeCount: likeCount,
-            userHasLiked: userHasLiked
+            upvoteCount: upvoteCount,
+            downvoteCount: downvoteCount,
+            userVote: userVote
         )
     }
 }
@@ -360,11 +361,13 @@ private struct MessageGridOnlyRow: Decodable {
     }
 }
 
-private struct LikeRow: Decodable {
-    let messageID: UUID
+private struct VoteRow: Decodable {
+    let userID: UUID
+    let voteValue: Int
 
     enum CodingKeys: String, CodingKey {
-        case messageID = "message_id"
+        case userID = "user_id"
+        case voteValue = "vote_value"
     }
 }
 

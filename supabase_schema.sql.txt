@@ -39,9 +39,10 @@ create table if not exists public.messages (
   constraint messages_text_length_check check (char_length(trim(text)) between 1 and 2000)
 );
 
-create table if not exists public.message_likes (
+create table if not exists public.message_votes (
   message_id uuid not null references public.messages (id) on delete cascade,
   user_id uuid not null references public.profiles (id) on delete cascade,
+  vote_value smallint not null check (vote_value in (-1, 1)),
   created_at timestamptz not null default timezone('utc', now()),
   primary key (message_id, user_id)
 );
@@ -59,8 +60,8 @@ create index if not exists messages_author_created_at_idx
 create index if not exists messages_parent_id_idx
   on public.messages (parent_id);
 
-create index if not exists message_likes_user_created_at_idx
-  on public.message_likes (user_id, created_at desc);
+create index if not exists message_votes_user_created_at_idx
+  on public.message_votes (user_id, created_at desc);
 
 -- =========================================================
 -- Trigger helpers
@@ -147,12 +148,12 @@ for each row execute function public.nullify_messages_for_deleted_user();
 
 alter table public.profiles enable row level security;
 alter table public.messages enable row level security;
-alter table public.message_likes enable row level security;
+alter table public.message_votes enable row level security;
 
 -- Optionally enforce RLS for table owners as well.
 alter table public.profiles force row level security;
 alter table public.messages force row level security;
-alter table public.message_likes force row level security;
+alter table public.message_votes force row level security;
 
 -- Profiles
 
@@ -225,25 +226,25 @@ create policy "messages_update_self"
   with check (auth.uid() = author_id);
 
 
--- Message likes
+-- Message votes
 
-drop policy if exists "likes_select_authenticated" on public.message_likes;
+drop policy if exists "likes_select_authenticated" on public.message_votes;
 create policy "likes_select_authenticated"
-  on public.message_likes
+  on public.message_votes
   for select
   to authenticated
   using (true);
 
-drop policy if exists "likes_insert_self" on public.message_likes;
+drop policy if exists "likes_insert_self" on public.message_votes;
 create policy "likes_insert_self"
-  on public.message_likes
+  on public.message_votes
   for insert
   to authenticated
   with check (auth.uid() = user_id);
 
-drop policy if exists "likes_delete_self" on public.message_likes;
+drop policy if exists "likes_delete_self" on public.message_votes;
 create policy "likes_delete_self"
-  on public.message_likes
+  on public.message_votes
   for delete
   to authenticated
   using (auth.uid() = user_id);
@@ -261,16 +262,16 @@ select
   m.grid_cell_id,
   m.parent_id,
   m.created_at,
-  coalesce(count(ml.user_id), 0)::int as like_count
+  coalesce(sum(mv.vote_value), 0)::int as score
 from public.messages m
 left join public.profiles p on p.id = m.author_id
-left join public.message_likes ml on ml.message_id = m.id
+left join public.message_votes mv on mv.message_id = m.id
 group by m.id, p.username;
 
 grant usage on schema public to anon, authenticated;
 grant select on public.messages_with_meta to anon, authenticated;
 grant select, insert, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.messages to authenticated;
-grant select, insert, delete on public.message_likes to authenticated;
+grant select, insert, delete on public.message_votes to authenticated;
 
 commit;
