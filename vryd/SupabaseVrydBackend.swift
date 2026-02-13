@@ -79,7 +79,7 @@ actor SupabaseVrydBackend: VrydBackend {
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] {
         let rows: [MessageRow] = try await client
             .from("messages")
-            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles(username)")
+            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!inner(username)")
             .eq("grid_cell_id", value: cell.id)
             .order("created_at", ascending: false)
             .execute()
@@ -105,7 +105,7 @@ actor SupabaseVrydBackend: VrydBackend {
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage] {
         let rows: [MessageRow] = try await client
             .from("messages")
-            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles(username)")
+            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!inner(username)")
             .eq("author_id", value: userID.uuidString)
             .order("created_at", ascending: false)
             .execute()
@@ -161,15 +161,15 @@ actor SupabaseVrydBackend: VrydBackend {
     }
 
     func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage {
-        let inserted: MessageRow = try await client
+        let inserted: MessageInsertResultRow = try await client
             .from("messages")
             .insert(MessageInsertRow(authorID: user.id.uuidString, text: text, gridCellID: cell.id, parentID: parentID?.uuidString))
-            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles(username)")
+            .select("id, author_id, text, grid_cell_id, parent_id, created_at")
             .single()
             .execute()
             .value
 
-        return inserted.asChatMessage(userHasLiked: false, likeCount: 0)
+        return inserted.asChatMessage(author: user.username, userHasLiked: false, likeCount: 0)
     }
 
     func like(messageID: UUID, by userID: UUID) async throws {
@@ -306,6 +306,38 @@ private struct MessageRow: Decodable {
             id: id,
             authorID: authorID,
             author: resolvedAuthor,
+            text: text,
+            createdAt: createdAt,
+            gridCellID: gridCellID,
+            parentID: parentID,
+            likeCount: likeCount,
+            userHasLiked: userHasLiked
+        )
+    }
+}
+
+private struct MessageInsertResultRow: Decodable {
+    let id: UUID
+    let authorID: UUID
+    let text: String
+    let gridCellID: String
+    let parentID: UUID?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case authorID = "author_id"
+        case text
+        case gridCellID = "grid_cell_id"
+        case parentID = "parent_id"
+        case createdAt = "created_at"
+    }
+
+    func asChatMessage(author: String, userHasLiked: Bool, likeCount: Int) -> ChatMessage {
+        ChatMessage(
+            id: id,
+            authorID: authorID,
+            author: author,
             text: text,
             createdAt: createdAt,
             gridCellID: gridCellID,
