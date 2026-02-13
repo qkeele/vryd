@@ -10,7 +10,7 @@ protocol VrydBackend {
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage]
     func fetchDailyCellCounts(near coordinate: CLLocationCoordinate2D, radiusMeters: Double, date: Date) async throws -> [String: Int]
     func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage
-    func like(messageID: UUID, by userID: UUID) async throws
+    func vote(messageID: UUID, by userID: UUID, value: Int?) async throws
     func delete(messageID: UUID, by userID: UUID) async throws
     func deleteAccount(userID: UUID) async throws
 }
@@ -40,7 +40,7 @@ actor UnavailableVrydBackend: VrydBackend {
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage] { throw BackendError.serverUnavailable }
     func fetchDailyCellCounts(near coordinate: CLLocationCoordinate2D, radiusMeters: Double, date: Date) async throws -> [String : Int] { throw BackendError.serverUnavailable }
     func postMessage(_ text: String, in cell: GridCell, from user: UserProfile, parentID: UUID?) async throws -> ChatMessage { throw BackendError.serverUnavailable }
-    func like(messageID: UUID, by userID: UUID) async throws { throw BackendError.serverUnavailable }
+    func vote(messageID: UUID, by userID: UUID, value: Int?) async throws { throw BackendError.serverUnavailable }
     func delete(messageID: UUID, by userID: UUID) async throws { throw BackendError.serverUnavailable }
     func deleteAccount(userID: UUID) async throws { throw BackendError.serverUnavailable }
 }
@@ -58,7 +58,7 @@ actor LiveVrydBackend: VrydBackend {
         let createdAt: Date
         let gridCellID: String
         let parentID: UUID?
-        var likedBy: Set<UUID>
+        var votesByUser: [UUID: Int]
     }
 
     private var users: [UUID: UserProfile] = [:]
@@ -92,7 +92,7 @@ actor LiveVrydBackend: VrydBackend {
                 createdAt: messages[idx].createdAt,
                 gridCellID: messages[idx].gridCellID,
                 parentID: messages[idx].parentID,
-                likedBy: messages[idx].likedBy
+                votesByUser: messages[idx].votesByUser
             )
         }
 
@@ -117,8 +117,9 @@ actor LiveVrydBackend: VrydBackend {
                     createdAt: record.createdAt,
                     gridCellID: record.gridCellID,
                     parentID: record.parentID,
-                    likeCount: record.likedBy.count,
-                    userHasLiked: record.likedBy.contains(viewerID)
+                    upvoteCount: record.votesByUser.values.filter { $0 == 1 }.count,
+                    downvoteCount: record.votesByUser.values.filter { $0 == -1 }.count,
+                    userVote: record.votesByUser[viewerID]
                 )
             }
     }
@@ -136,8 +137,9 @@ actor LiveVrydBackend: VrydBackend {
                     createdAt: record.createdAt,
                     gridCellID: record.gridCellID,
                     parentID: record.parentID,
-                    likeCount: record.likedBy.count,
-                    userHasLiked: record.likedBy.contains(userID)
+                    upvoteCount: record.votesByUser.values.filter { $0 == 1 }.count,
+                    downvoteCount: record.votesByUser.values.filter { $0 == -1 }.count,
+                    userVote: record.votesByUser[userID]
                 )
             }
     }
@@ -176,7 +178,7 @@ actor LiveVrydBackend: VrydBackend {
             createdAt: .now,
             gridCellID: cell.id,
             parentID: parentID,
-            likedBy: []
+            votesByUser: [:]
         )
         messages.append(message)
         return ChatMessage(
@@ -187,15 +189,20 @@ actor LiveVrydBackend: VrydBackend {
             createdAt: message.createdAt,
             gridCellID: message.gridCellID,
             parentID: message.parentID,
-            likeCount: 0,
-            userHasLiked: false
+            upvoteCount: 0,
+            downvoteCount: 0,
+            userVote: nil
         )
     }
 
-    func like(messageID: UUID, by userID: UUID) async throws {
+    func vote(messageID: UUID, by userID: UUID, value: Int?) async throws {
         guard let index = messages.firstIndex(where: { $0.id == messageID }) else { throw BackendError.notFound }
-        guard !messages[index].likedBy.contains(userID) else { return }
-        messages[index].likedBy.insert(userID)
+        if let value {
+            guard value == 1 || value == -1 else { return }
+            messages[index].votesByUser[userID] = value
+        } else {
+            messages[index].votesByUser.removeValue(forKey: userID)
+        }
     }
 
     func delete(messageID: UUID, by userID: UUID) async throws {
@@ -208,7 +215,7 @@ actor LiveVrydBackend: VrydBackend {
         users.removeValue(forKey: userID)
         messages.removeAll { $0.authorID == userID }
         for idx in messages.indices {
-            messages[idx].likedBy.remove(userID)
+            messages[idx].votesByUser.removeValue(forKey: userID)
         }
     }
 }

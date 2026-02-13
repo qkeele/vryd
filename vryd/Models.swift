@@ -119,6 +119,11 @@ struct ChatMessage: Identifiable, Hashable {
     let createdAt: Date
     let gridCellID: String
     let parentID: UUID?
-    var likeCount: Int
-    var userHasLiked: Bool
+    var upvoteCount: Int
+    var downvoteCount: Int
+    var userVote: Int?
+
+    var score: Int {
+        upvoteCount - downvoteCount
+    }
 }
