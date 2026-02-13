@@ -6,17 +6,30 @@
 	objectVersion = 77;
 	objects = {
 
-/* Begin PBXFileReference section */
-		976901F92F3D08F600344BD3 /* vryd.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vryd.app; sourceTree = BUILT_PRODUCTS_DIR; };
-/* End PBXFileReference section */
-
 /* Begin PBXBuildFile section */
 		A11B22C33D44E55F00112233 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = A11B22C33D44E55F00112234 /* Supabase */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXFileReference section */
+		976901F92F3D08F600344BD3 /* vryd.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = vryd.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		976902942F3FAD8E00344BD3 /* Exceptions for "vryd" folder in "vryd" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 976901F82F3D08F600344BD3 /* vryd */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		976901FB2F3D08F600344BD3 /* vryd */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				976902942F3FAD8E00344BD3 /* Exceptions for "vryd" folder in "vryd" target */,
+			);
 			path = vryd;
 			sourceTree = "<group>";
 		};
@@ -122,25 +135,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		A11B22C33D44E55F00112235 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/supabase/supabase-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		A11B22C33D44E55F00112234 /* Supabase */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A11B22C33D44E55F00112235 /* XCRemoteSwiftPackageReference "supabase-swift" */;
-			productName = Supabase;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXSourcesBuildPhase section */
 		976901F52F3D08F600344BD3 /* Sources */ = {
@@ -279,6 +273,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = vryd/vryd.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CW3VS96Q34;
@@ -307,6 +302,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = vryd/vryd.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CW3VS96Q34;
@@ -352,6 +348,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A11B22C33D44E55F00112235 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A11B22C33D44E55F00112234 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A11B22C33D44E55F00112235 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 976901F12F3D08F600344BD3 /* Project object */;
 }
