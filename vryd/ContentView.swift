@@ -39,7 +39,7 @@ final class AppViewModel: ObservableObject {
         return trimmed.isEmpty ? "@new_user" : "@\(trimmed)"
     }
 
-    init(backend: VrydBackend = LiveVrydBackend()) {
+    init(backend: VrydBackend) {
         self.backend = backend
         locationManager.onLocation = { [weak self] coordinate in
             Task { @MainActor in
@@ -229,9 +229,13 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
 
 @MainActor
 struct ContentView: View {
-    @StateObject private var viewModel = AppViewModel()
+    @StateObject private var viewModel: AppViewModel
     @State private var showingGridChat = false
     @State private var showingProfile = false
+
+    init(backend: VrydBackend) {
+        _viewModel = StateObject(wrappedValue: AppViewModel(backend: backend))
+    }
 
     var body: some View {
         Group {
@@ -841,6 +845,3 @@ final class HeatPolygon: MKPolygon, @unchecked Sendable {
     }
 }
 
-#Preview {
-    ContentView()
-}

@@ -1,0 +1,4 @@
+-- Optional cleanup if you previously created the old view.
+-- Safe to run multiple times.
+
+drop view if exists public.messages_with_meta;
