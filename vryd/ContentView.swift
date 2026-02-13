@@ -1180,6 +1180,20 @@ struct GridMapView: UIViewRepresentable {
         private var lastAnchoredCellID: String?
         private var isRecenteringCamera = false
 
+        private func clampedZoomDistance(for mapView: MKMapView) -> CLLocationDistance {
+            max(parent.minDistance, min(mapView.camera.centerCoordinateDistance, parent.maxDistance))
+        }
+
+        private func enforceCameraConstraints(on mapView: MKMapView, anchoredCenter: CLLocationCoordinate2D) {
+            let clampedZoomDistance = clampedZoomDistance(for: mapView)
+            let mapCenterOffset = MKMapPoint(mapView.centerCoordinate).distance(to: MKMapPoint(anchoredCenter))
+            let needsRecentering = mapCenterOffset > 2
+            let needsZoomClamp = abs(mapView.camera.centerCoordinateDistance - clampedZoomDistance) > 0.5
+
+            guard needsRecentering || needsZoomClamp else { return }
+            recenterMap(on: mapView, to: anchoredCenter, zoomDistance: clampedZoomDistance)
+        }
+
         init(parent: GridMapView) {
             self.parent = parent
         }
@@ -1203,7 +1217,7 @@ struct GridMapView: UIViewRepresentable {
             }
 
             let currentZoomDistance = mapView.camera.centerCoordinateDistance
-            let clampedZoomDistance = max(parent.minDistance, min(currentZoomDistance, parent.maxDistance))
+            let clampedZoomDistance = clampedZoomDistance(for: mapView)
 
             if previousCellID == currentCellID {
                 if abs(currentZoomDistance - clampedZoomDistance) > 0.5 {
@@ -1265,13 +1279,15 @@ struct GridMapView: UIViewRepresentable {
             guard !isRecenteringCamera else { return }
 
             let anchoredCenter = GridMapView.cellCenterCoordinate(for: parent.center)
-            let mapCenterOffset = MKMapPoint(mapView.centerCoordinate).distance(to: MKMapPoint(anchoredCenter))
-            if mapCenterOffset > 2 {
-                let clampedZoomDistance = max(parent.minDistance, min(mapView.camera.centerCoordinateDistance, parent.maxDistance))
-                recenterMap(on: mapView, to: anchoredCenter, zoomDistance: clampedZoomDistance)
-            }
+            enforceCameraConstraints(on: mapView, anchoredCenter: anchoredCenter)
 
             refreshOverlays(on: mapView, center: anchoredCenter, heatmapCounts: parent.heatmapCounts)
+        }
+
+        func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            guard !isRecenteringCamera else { return }
+            let anchoredCenter = GridMapView.cellCenterCoordinate(for: parent.center)
+            enforceCameraConstraints(on: mapView, anchoredCenter: anchoredCenter)
         }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
