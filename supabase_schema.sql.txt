@@ -30,7 +30,7 @@ create table if not exists public.profiles (
 
 create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
-  author_id uuid not null references public.profiles (id) on delete cascade,
+  author_id uuid references public.profiles (id) on delete set null,
   text text not null,
   grid_cell_id text not null,
   parent_id uuid references public.messages (id) on delete cascade,
@@ -106,6 +106,41 @@ create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
 
+-- Preserve top-level messages when accounts are deleted.
+create or replace function public.nullify_messages_for_deleted_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.messages
+  set author_id = null,
+      text = '[deleted]'
+  where author_id = old.id
+    and parent_id is null
+    and exists (
+      select 1 from public.messages child where child.parent_id = public.messages.id
+    );
+
+  delete from public.messages
+  where author_id = old.id
+    and (
+      parent_id is not null
+      or not exists (
+        select 1 from public.messages child where child.parent_id = public.messages.id
+      )
+    );
+
+  return old;
+end;
+$$;
+
+drop trigger if exists before_profile_deleted_cleanup_messages on public.profiles;
+create trigger before_profile_deleted_cleanup_messages
+before delete on public.profiles
+for each row execute function public.nullify_messages_for_deleted_user();
+
 -- =========================================================
 -- RLS + policies
 -- =========================================================
@@ -166,6 +201,21 @@ create policy "messages_insert_self"
   to authenticated
   with check (auth.uid() = author_id);
 
+drop policy if exists "messages_delete_self" on public.messages;
+create policy "messages_delete_self"
+  on public.messages
+  for delete
+  to authenticated
+  using (
+    auth.uid() = author_id
+    or (
+      author_id is null
+      and not exists (
+        select 1 from public.messages child where child.parent_id = messages.id
+      )
+    )
+  );
+
 drop policy if exists "messages_update_self" on public.messages;
 create policy "messages_update_self"
   on public.messages
@@ -174,12 +224,6 @@ create policy "messages_update_self"
   using (auth.uid() = author_id)
   with check (auth.uid() = author_id);
 
-drop policy if exists "messages_delete_self" on public.messages;
-create policy "messages_delete_self"
-  on public.messages
-  for delete
-  to authenticated
-  using (auth.uid() = author_id);
 
 -- Message likes
 
@@ -219,7 +263,7 @@ select
   m.created_at,
   coalesce(count(ml.user_id), 0)::int as like_count
 from public.messages m
-join public.profiles p on p.id = m.author_id
+left join public.profiles p on p.id = m.author_id
 left join public.message_likes ml on ml.message_id = m.id
 group by m.id, p.username;
 

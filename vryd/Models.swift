@@ -113,7 +113,7 @@ enum SpatialGrid {
 
 struct ChatMessage: Identifiable, Hashable {
     let id: UUID
-    let authorID: UUID
+    let authorID: UUID?
     let author: String
     let text: String
     let createdAt: Date
