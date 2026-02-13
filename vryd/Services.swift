@@ -2,7 +2,7 @@ import Foundation
 import CoreLocation
 
 protocol VrydBackend {
-    func signInWithApple() async throws -> UserProfile
+    func signInWithApple(idToken: String, nonce: String) async throws -> UserProfile
     func isUsernameAvailable(_ username: String) async throws -> Bool
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage]
@@ -31,7 +31,7 @@ enum BackendError: LocalizedError {
 }
 
 actor UnavailableVrydBackend: VrydBackend {
-    func signInWithApple() async throws -> UserProfile { throw BackendError.serverUnavailable }
+    func signInWithApple(idToken: String, nonce: String) async throws -> UserProfile { throw BackendError.serverUnavailable }
     func isUsernameAvailable(_ username: String) async throws -> Bool { throw BackendError.serverUnavailable }
     func updateUsername(userID: UUID, username: String) async throws -> UserProfile { throw BackendError.serverUnavailable }
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] { throw BackendError.serverUnavailable }
@@ -58,7 +58,7 @@ actor LiveVrydBackend: VrydBackend {
     private var users: [UUID: UserProfile] = [:]
     private var messages: [StoredMessage] = []
 
-    func signInWithApple() async throws -> UserProfile {
+    func signInWithApple(idToken: String, nonce: String) async throws -> UserProfile {
         let id = UUID()
         let user = UserProfile(
             id: id,

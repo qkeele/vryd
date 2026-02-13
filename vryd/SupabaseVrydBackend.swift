@@ -10,10 +10,14 @@ actor SupabaseVrydBackend: VrydBackend {
         self.client = client
     }
 
-    func signInWithApple() async throws -> UserProfile {
-        // Quick-start behavior: anonymous auth so app is immediately usable after adding URL/key.
-        // You can replace this with full Apple ID token exchange later.
-        _ = try await client.auth.signInAnonymously()
+    func signInWithApple(idToken: String, nonce: String) async throws -> UserProfile {
+        _ = try await client.auth.signInWithIdToken(
+            credentials: OpenIDConnectCredentials(
+                provider: .apple,
+                idToken: idToken,
+                nonce: nonce
+            )
+        )
 
         guard let authUser = client.auth.currentUser else { throw BackendError.notFound }
 
