@@ -180,7 +180,7 @@ actor SupabaseVrydBackend: VrydBackend {
             guard value == 1 || value == -1 else { return }
             _ = try await client
                 .from("message_votes")
-                .upsert(["message_id": messageID.uuidString, "user_id": userID.uuidString, "vote_value": value], onConflict: "message_id,user_id")
+                .upsert(VoteUpsertRow(messageID: messageID.uuidString, userID: userID.uuidString, voteValue: value), onConflict: "message_id,user_id")
                 .execute()
         } else {
             _ = try await client
@@ -366,6 +366,18 @@ private struct VoteRow: Decodable {
     let voteValue: Int
 
     enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case voteValue = "vote_value"
+    }
+}
+
+private struct VoteUpsertRow: Encodable {
+    let messageID: String
+    let userID: String
+    let voteValue: Int
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
         case userID = "user_id"
         case voteValue = "vote_value"
     }
