@@ -872,45 +872,43 @@ struct GridChatSheet: View {
         }
     }
 
-    private func nestedReplies(parentID: UUID?, depth: Int) -> AnyView {
+    private func nestedReplies(parentID: UUID?, depth: Int) -> some View {
         let replies = sortedReplies(for: parentID)
         let visibleCount = visibleReplyCountByParent[parentID] ?? min(pageSize, replies.count)
 
-        return AnyView(
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(replies.prefix(visibleCount))) { reply in
-                    let childCount = viewModel.replies(for: reply.id).count
-                    FlatCommentRow(
-                        message: reply,
-                        canDelete: viewModel.activeUser?.id == reply.authorID,
-                        upvoteAction: { Task { await viewModel.vote(reply, value: 1) } },
-                        downvoteAction: { Task { await viewModel.vote(reply, value: -1) } },
-                        replyAction: {
-                            viewModel.replyTo = reply
-                            viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
-                        },
-                        deleteAction: { Task { await viewModel.delete(reply) } },
-                        showReplyCount: childCount == 0 ? nil : childCount,
-                        compact: true,
-                        indentation: depth
-                    )
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(replies.prefix(visibleCount))) { reply in
+                let childCount = viewModel.replies(for: reply.id).count
+                FlatCommentRow(
+                    message: reply,
+                    canDelete: viewModel.activeUser?.id == reply.authorID,
+                    upvoteAction: { Task { await viewModel.vote(reply, value: 1) } },
+                    downvoteAction: { Task { await viewModel.vote(reply, value: -1) } },
+                    replyAction: {
+                        viewModel.replyTo = reply
+                        viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
+                    },
+                    deleteAction: { Task { await viewModel.delete(reply) } },
+                    showReplyCount: childCount == 0 ? nil : childCount,
+                    compact: true,
+                    indentation: depth
+                )
 
-                    if childCount > 0 {
-                        nestedReplies(parentID: reply.id, depth: depth + 1)
-                    }
-                }
-
-                if replies.count > visibleCount {
-                    Button("Show \(min(pageSize, replies.count - visibleCount)) more repl\(replies.count - visibleCount == 1 ? "y" : "ies")") {
-                        visibleReplyCountByParent[parentID] = min(replies.count, visibleCount + pageSize)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, CGFloat(depth * 12) + 6)
-                    .padding(.vertical, 2)
+                if childCount > 0 {
+                    nestedReplies(parentID: reply.id, depth: depth + 1)
                 }
             }
-        )
+
+            if replies.count > visibleCount {
+                Button("Show \(min(pageSize, replies.count - visibleCount)) more repl\(replies.count - visibleCount == 1 ? "y" : "ies")") {
+                    visibleReplyCountByParent[parentID] = min(replies.count, visibleCount + pageSize)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, CGFloat(depth * 12) + 6)
+                .padding(.vertical, 2)
+            }
+        }
     }
 
     private func sortedReplies(for parentID: UUID?) -> [ChatMessage] {
