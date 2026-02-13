@@ -11,7 +11,7 @@ import SwiftUI
 struct vrydApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(backend: BackendFactory.makeBackend())
         }
     }
 }
