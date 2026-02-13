@@ -6,16 +6,31 @@ enum SupabaseConfig {
 
     private static var plist: [String: Any] { Bundle.main.infoDictionary ?? [:] }
 
-    static var urlString: String {
-        ProcessInfo.processInfo.environment["SUPABASE_URL"]
-            ?? plist["SUPABASE_URL"] as? String
+    private static func firstNonEmpty(_ values: [String?]) -> String {
+        values
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
             ?? ""
     }
 
+    static var urlString: String {
+        firstNonEmpty([
+            ProcessInfo.processInfo.environment["SUPABASE_URL"],
+            ProcessInfo.processInfo.environment["NEXT_PUBLIC_SUPABASE_URL"],
+            plist["SUPABASE_URL"] as? String,
+            plist["NEXT_PUBLIC_SUPABASE_URL"] as? String
+        ])
+    }
+
     static var anonKey: String {
-        ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"]
-            ?? plist["SUPABASE_ANON_KEY"] as? String
-            ?? ""
+        firstNonEmpty([
+            ProcessInfo.processInfo.environment["SUPABASE_ANON_KEY"],
+            ProcessInfo.processInfo.environment["SUPABASE_KEY"],
+            ProcessInfo.processInfo.environment["NEXT_PUBLIC_SUPABASE_ANON_KEY"],
+            plist["SUPABASE_ANON_KEY"] as? String,
+            plist["SUPABASE_KEY"] as? String,
+            plist["NEXT_PUBLIC_SUPABASE_ANON_KEY"] as? String
+        ])
     }
 
     static var url: URL? {

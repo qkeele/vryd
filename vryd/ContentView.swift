@@ -6,7 +6,6 @@ import Combine
 @MainActor
 final class AppViewModel: ObservableObject {
     enum Screen {
-        case location
         case main
     }
 
@@ -21,7 +20,7 @@ final class AppViewModel: ObservableObject {
         case ready
     }
 
-    @Published var screen: Screen = .location
+    @Published var screen: Screen = .main
     @Published var statusMessage = ""
     @Published var usernameDraft = ""
     @Published var authFlowStep: AuthFlowStep = .username
@@ -65,7 +64,7 @@ final class AppViewModel: ObservableObject {
         locationManager.onDenied = { [weak self] in
             Task { @MainActor in
                 self?.locationState = .denied
-                self?.statusMessage = "Please share your location to use Vryd."
+                self?.statusMessage = "Location is off. Enable it in Settings to use grid features."
             }
         }
     }
@@ -229,6 +228,9 @@ final class AppViewModel: ObservableObject {
 
     private func userFacingErrorMessage(_ error: Error) -> String {
         if let backendError = error as? BackendError {
+            if case .serverUnavailable = backendError {
+                return "Could not connect to Supabase. Confirm SUPABASE_URL + SUPABASE_ANON_KEY (or SUPABASE_KEY) are set on the app target Info.plist."
+            }
             return backendError.localizedDescription
         }
 
@@ -283,14 +285,7 @@ struct ContentView: View {
     }
 
     var body: some View {
-        Group {
-            switch viewModel.screen {
-            case .location:
-                LocationPromptView(viewModel: viewModel)
-            case .main:
-                mapScreen
-            }
-        }
+        mapScreen
         .task { viewModel.bootstrap() }
     }
 
@@ -298,6 +293,9 @@ struct ContentView: View {
         ZStack(alignment: .bottom) {
             if let coordinate = viewModel.currentCoordinate {
                 GridMapView(center: coordinate, heatmapCounts: viewModel.heatmapCounts)
+                    .ignoresSafeArea()
+            } else {
+                Color.white
                     .ignoresSafeArea()
             }
 
@@ -314,6 +312,8 @@ struct ContentView: View {
                         }
                         showingProfile = true
                     }
+                    .disabled(viewModel.currentCoordinate == nil)
+                    .opacity(viewModel.currentCoordinate == nil ? 0.45 : 1)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
@@ -327,7 +327,15 @@ struct ContentView: View {
                     }
                     showingGridChat = true
                 }
+                    .disabled(viewModel.currentCoordinate == nil)
+                    .opacity(viewModel.currentCoordinate == nil ? 0.45 : 1)
                     .padding(.bottom, 26)
+            }
+
+            if viewModel.locationState == .denied {
+                LocationUnavailableBanner(retryAction: viewModel.requestLocation)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 100)
             }
         }
         .fullScreenCover(isPresented: $viewModel.showingAuthFlow) {
@@ -348,9 +356,17 @@ struct AuthOnboardingFlowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Button("Not now") { dismiss() }
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.black)
+            HStack {
+                Spacer()
+                Button(action: { dismiss() }) {
+                    Image(systemName: "xmark")
+                        .font(.footnote.weight(.bold))
+                        .foregroundStyle(.black)
+                        .padding(10)
+                        .background(Color.black.opacity(0.06))
+                        .clipShape(Circle())
+                }
+            }
 
             Text("Set up your account")
                 .font(.title.bold())
@@ -451,6 +467,37 @@ struct LocationPromptView: View {
             }
         }
         .padding(20)
+    }
+}
+
+struct LocationUnavailableBanner: View {
+    var retryAction: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Text("Location unavailable")
+                .font(.headline)
+            Text("Turn on location access in Settings to interact with nearby posts.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Button("Retry", action: retryAction)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black)
+                .clipShape(Capsule())
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity)
+        .background(Color.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.12), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
