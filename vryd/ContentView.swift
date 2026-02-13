@@ -819,93 +819,6 @@ struct CloseToolbarButton: ToolbarContent {
 }
 
 struct GridChatSheet: View {
-    @ObservedObject var viewModel: AppViewModel
-    @Environment(\.dismiss) private var dismiss
-    @State private var selectedThread: ChatMessage?
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 8) {
-                Picker("Sort", selection: $viewModel.topLevelSort) {
-                    ForEach(AppViewModel.TopLevelSortOption.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(viewModel.sortedTopLevelMessages) { message in
-                            Button {
-                                selectedThread = message
-                            } label: {
-                                FlatCommentRow(
-                                    message: message,
-                                    canDelete: false,
-                                    upvoteAction: {},
-                                    downvoteAction: {},
-                                    replyAction: {},
-                                    deleteAction: {},
-                                    showReplyCount: viewModel.replyCount(for: message.id),
-                                    compact: true
-                                )
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if viewModel.gridMessages.isEmpty {
-                            Text("Nothing to see here yet.")
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 16)
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                }
-
-                composer
-            }
-            .background(Color.white)
-            .toolbar {
-                CloseToolbarButton { dismiss() }
-            }
-        }
-        .sheet(item: $selectedThread) { thread in
-            ThreadDetailView(viewModel: viewModel, topLevel: thread)
-        }
-        .task {
-            await viewModel.refreshGridData()
-            await viewModel.refreshHeatmapData()
-        }
-    }
-
-    private var composer: some View {
-        HStack(spacing: 10) {
-            TextField("Write a post…", text: $viewModel.draftMessage, axis: .vertical)
-                .lineLimit(1...4)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .background(Color.white)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.black.opacity(0.15), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-            Button("Post") { Task { await viewModel.postMessage() } }
-                .font(.headline)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .background(Color.black)
-                .clipShape(Capsule())
-        }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-    }
-}
-
-struct ThreadDetailView: View {
     enum CommentSort: String, CaseIterable, Identifiable {
         case top = "Top"
         case newest = "Newest"
@@ -915,21 +828,14 @@ struct ThreadDetailView: View {
 
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
-    let topLevel: ChatMessage
     @State private var commentSort: CommentSort = .top
-    @State private var visibleReplyCountByParent: [UUID: Int] = [:]
+    @State private var visibleReplyCountByParent: [UUID?: Int] = [:]
 
-    private let pageSize = 10
+    private let pageSize = 12
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 8) {
-                FlatCommentRow(message: topLevel, canDelete: viewModel.activeUser?.id == topLevel.authorID, upvoteAction: { Task { await viewModel.vote(topLevel, value: 1) } }, downvoteAction: { Task { await viewModel.vote(topLevel, value: -1) } }, replyAction: {
-                    viewModel.replyTo = topLevel
-                    viewModel.draftMessage = "@\(resolvedAuthorName(for: topLevel)) "
-                }, deleteAction: { Task { await viewModel.delete(topLevel) } }, showReplyCount: viewModel.replyCount(for: topLevel.id), compact: true)
-                .padding(.horizontal, 16)
-
+            VStack(spacing: 6) {
                 Picker("Sort comments", selection: $commentSort) {
                     ForEach(CommentSort.allCases) { option in
                         Text(option.rawValue).tag(option)
@@ -939,56 +845,80 @@ struct ThreadDetailView: View {
                 .padding(.horizontal, 16)
 
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        nestedReplies(parentID: topLevel.id, depth: 1)
+                    LazyVStack(alignment: .leading, spacing: 4) {
+                        if viewModel.gridMessages.isEmpty {
+                            Text("No comments yet — be the first one in this grid.")
+                                .foregroundStyle(.secondary)
+                                .font(.subheadline)
+                                .padding(.top, 20)
+                        } else {
+                            nestedReplies(parentID: nil, depth: 0)
+                                .padding(.top, 2)
+                        }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 12)
                 }
 
                 composer
             }
+            .background(Color.white)
             .toolbar {
                 CloseToolbarButton { dismiss() }
             }
         }
+        .task {
+            await viewModel.refreshGridData()
+            await viewModel.refreshHeatmapData()
+        }
     }
 
-    private func nestedReplies(parentID: UUID, depth: Int) -> AnyView {
+    private func nestedReplies(parentID: UUID?, depth: Int) -> some View {
         let replies = sortedReplies(for: parentID)
-        let visibleCount = visibleReplyCountByParent[parentID] ?? 0
+        let visibleCount = visibleReplyCountByParent[parentID] ?? min(pageSize, replies.count)
 
-        return AnyView(
-            VStack(alignment: .leading, spacing: 6) {
-                if visibleCount == 0, !replies.isEmpty {
-                    Button("Show \(min(pageSize, replies.count)) of \(replies.count) repl\(replies.count == 1 ? "y" : "ies")") {
-                        visibleReplyCountByParent[parentID] = min(pageSize, replies.count)
-                    }
-                    .font(.caption)
-                }
-
-                ForEach(Array(replies.prefix(visibleCount))) { reply in
-                    FlatCommentRow(message: reply, canDelete: viewModel.activeUser?.id == reply.authorID, upvoteAction: { Task { await viewModel.vote(reply, value: 1) } }, downvoteAction: { Task { await viewModel.vote(reply, value: -1) } }, replyAction: {
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(replies.prefix(visibleCount))) { reply in
+                let childCount = viewModel.replies(for: reply.id).count
+                FlatCommentRow(
+                    message: reply,
+                    canDelete: viewModel.activeUser?.id == reply.authorID,
+                    upvoteAction: { Task { await viewModel.vote(reply, value: 1) } },
+                    downvoteAction: { Task { await viewModel.vote(reply, value: -1) } },
+                    replyAction: {
                         viewModel.replyTo = reply
                         viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
-                    }, deleteAction: { Task { await viewModel.delete(reply) } }, showReplyCount: nil, compact: true, indentation: depth)
+                    },
+                    deleteAction: { Task { await viewModel.delete(reply) } },
+                    showReplyCount: childCount == 0 ? nil : childCount,
+                    compact: true,
+                    indentation: depth
+                )
+
+                if childCount > 0 {
                     nestedReplies(parentID: reply.id, depth: depth + 1)
                 }
-
-                if replies.count > visibleCount {
-                    Button("Show \(min(pageSize, replies.count - visibleCount)) more") {
-                        visibleReplyCountByParent[parentID] = min(replies.count, visibleCount + pageSize)
-                    }
-                    .font(.caption)
-                }
             }
-        )
+
+            if replies.count > visibleCount {
+                Button("Show \(min(pageSize, replies.count - visibleCount)) more repl\(replies.count - visibleCount == 1 ? "y" : "ies")") {
+                    visibleReplyCountByParent[parentID] = min(replies.count, visibleCount + pageSize)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, CGFloat(depth * 12) + 6)
+                .padding(.vertical, 2)
+            }
+        }
     }
 
-    private func sortedReplies(for parentID: UUID) -> [ChatMessage] {
-        let replies = viewModel.replies(for: parentID)
+    private func sortedReplies(for parentID: UUID?) -> [ChatMessage] {
+        let replies = viewModel.gridMessages.filter { $0.parentID == parentID }
         switch commentSort {
         case .top:
-            return replies.sorted { $0.score > $1.score }
+            return replies.sorted {
+                if $0.score == $1.score { return $0.createdAt < $1.createdAt }
+                return $0.score > $1.score
+            }
         case .newest:
             return replies.sorted { $0.createdAt > $1.createdAt }
         case .oldest:
@@ -1002,11 +932,12 @@ struct ThreadDetailView: View {
     }
 
     private var composer: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 4) {
             if let reply = viewModel.replyTo {
                 HStack {
                     Text("Replying to @\(resolvedAuthorName(for: reply))")
                         .font(.caption)
+                        .foregroundStyle(.secondary)
                     Spacer()
                     Button("Cancel") { viewModel.replyTo = nil; viewModel.draftMessage = "" }
                         .font(.caption)
@@ -1014,16 +945,19 @@ struct ThreadDetailView: View {
                 .padding(.horizontal, 16)
             }
 
-            HStack(spacing: 10) {
-                TextField("Write a reply…", text: $viewModel.draftMessage, axis: .vertical)
+            HStack(spacing: 8) {
+                TextField("Add a comment…", text: $viewModel.draftMessage, axis: .vertical)
                     .lineLimit(1...3)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.black.opacity(0.15)))
-                Button("Reply") { Task { await viewModel.postMessage() } }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color.black.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                Button(viewModel.replyTo == nil ? "Post" : "Reply") { Task { await viewModel.postMessage() } }
                     .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.black)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
         }
     }
@@ -1060,7 +994,7 @@ struct FlatCommentRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: compact ? 2 : 4) {
             Text("\(authorLabel) • \(relativeTime)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1068,7 +1002,7 @@ struct FlatCommentRow: View {
             Text(message.text)
                 .font(compact ? .subheadline : .body)
 
-            HStack(spacing: 12) {
+            HStack(spacing: compact ? 10 : 12) {
                 Button(action: upvoteAction) {
                     Label("\(message.upvoteCount)", systemImage: message.userVote == 1 ? "arrow.up.circle.fill" : "arrow.up.circle")
                 }
@@ -1096,9 +1030,10 @@ struct FlatCommentRow: View {
             .font(.caption)
         }
         .padding(.leading, CGFloat(indentation * 12))
-        .padding(8)
-        .background(Color.black.opacity(0.03))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .padding(.horizontal, compact ? 8 : 10)
+        .padding(.vertical, compact ? 6 : 8)
+        .background(Color.black.opacity(compact ? 0.02 : 0.03))
+        .clipShape(RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous))
         .contextMenu {
             if canDelete {
                 Button("Delete", role: .destructive, action: deleteAction)
