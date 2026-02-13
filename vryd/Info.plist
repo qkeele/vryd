@@ -23,9 +23,9 @@
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Vryd uses your location to show your current grid cell and nearby activity.</string>
 	<key>SUPABASE_ANON_KEY</key>
-	<string>PASTE_SUPABASE_ANON_KEY_HERE</string>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV1YXlwZWtqenJpemhtYmJhanV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4NTUyMjQsImV4cCI6MjA4NjQzMTIyNH0.zGYweI6T3SuaZfWZpMusXnnTolW5Bg092uLoVP0UCk0</string>
 	<key>SUPABASE_URL</key>
-	<string>PASTE_SUPABASE_URL_HERE</string>
+	<string>https://uuaypekjzrizhmbbajuv.supabase.co</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

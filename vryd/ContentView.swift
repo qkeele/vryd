@@ -355,85 +355,78 @@ struct AuthOnboardingFlowView: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Spacer()
-                Button(action: { dismiss() }) {
-                    Image(systemName: "xmark")
-                        .font(.footnote.weight(.bold))
-                        .foregroundStyle(.black)
-                        .padding(10)
-                        .background(Color.black.opacity(0.06))
-                        .clipShape(Circle())
-                }
-            }
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Set up your account")
+                    .font(.title.bold())
 
-            Text("Set up your account")
-                .font(.title.bold())
-
-            Text("Choose a username to continue.")
-                .foregroundStyle(.secondary)
-
-            VStack(alignment: .leading, spacing: 10) {
-                TextField("username", text: $viewModel.usernameDraft)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Color.white)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(Color.black.opacity(0.15), lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                Text(UsernameRules.helperText)
-                    .font(.footnote)
+                Text("Choose a username to continue.")
                     .foregroundStyle(.secondary)
 
-                if viewModel.authFlowStep == .username {
-                    Button("Continue") { Task { await viewModel.continueToAppleStep() } }
-                        .font(.headline)
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 10) {
+                    TextField("username", text: $viewModel.usernameDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .padding(.horizontal, 14)
                         .padding(.vertical, 12)
-                        .background(Color.black)
-                        .clipShape(Capsule())
-                        .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
-                } else {
-                    Text("Username locked in: @\(viewModel.usernameDraft)")
-                        .font(.subheadline)
+                        .background(Color.white)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    Text(UsernameRules.helperText)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
 
-                    Button(action: { Task { await viewModel.signInWithApple() } }) {
-                        Label("Sign in with Apple", systemImage: "apple.logo")
+                    if viewModel.authFlowStep == .username {
+                        Button("Continue") { Task { await viewModel.continueToAppleStep() } }
                             .font(.headline)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
+                            .padding(.vertical, 12)
                             .background(Color.black)
                             .foregroundStyle(.white)
                             .clipShape(Capsule())
+                            .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    } else {
+                        Text("Username locked in: @\(viewModel.usernameDraft)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        Button(action: { Task { await viewModel.signInWithApple() } }) {
+                            Label("Sign in with Apple", systemImage: "apple.logo")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(Color.black)
+                                .foregroundStyle(.white)
+                                .clipShape(Capsule())
+                        }
                     }
                 }
+                .padding(16)
+                .background(Color.white)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                if !viewModel.statusMessage.isEmpty {
+                    Text(viewModel.statusMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+
+                Spacer()
             }
-            .padding(16)
+            .padding(20)
             .background(Color.white)
-            .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color.black.opacity(0.12), lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-            if !viewModel.statusMessage.isEmpty {
-                Text(viewModel.statusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
+            .toolbar {
+                CloseToolbarButton { dismiss() }
             }
-
-            Spacer()
         }
-        .padding(20)
-        .background(Color.white)
     }
 }
 
@@ -541,6 +534,17 @@ struct FloatingCircleButton: View {
     }
 }
 
+struct CloseToolbarButton: ToolbarContent {
+    var action: () -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button("Close", action: action)
+                .foregroundStyle(.black)
+        }
+    }
+}
+
 struct GridChatSheet: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
@@ -629,10 +633,7 @@ struct GridChatSheet: View {
             }
             .background(Color.white)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
-                        .foregroundStyle(.black)
-                }
+                CloseToolbarButton { dismiss() }
             }
         }
         .task {
@@ -758,10 +759,7 @@ struct ProfileView: View {
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Close") { dismiss() }
-                        .foregroundStyle(.black)
-                }
+                CloseToolbarButton { dismiss() }
             }
             .task { await viewModel.refreshProfile() }
             .alert("Delete account?", isPresented: $confirmDeleteAccount) {
