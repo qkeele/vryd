@@ -56,6 +56,20 @@ final class AppViewModel: ObservableObject {
         return trimmed.isEmpty ? "@new_user" : "@\(trimmed)"
     }
 
+    var needsUsername: Bool {
+        guard let activeUser else { return false }
+        return !activeUser.hasValidUsername
+    }
+
+    @discardableResult
+    func enforceUsernameSetupIfNeeded() -> Bool {
+        guard needsUsername else { return false }
+        authFlowStep = .usernameSetup
+        showingAuthFlow = true
+        statusMessage = "Pick a username to continue."
+        return true
+    }
+
     init(backend: VrydBackend) {
         self.backend = backend
         locationManager.onLocation = { [weak self] coordinate in
@@ -197,13 +211,31 @@ final class AppViewModel: ObservableObject {
             !draftMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return }
 
+        let messageText = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parentID = replyTo?.id
+
         do {
-            _ = try await backend.postMessage(draftMessage, in: cell, from: user, parentID: replyTo?.id)
+            let posted = try await backend.postMessage(messageText, in: cell, from: user, parentID: parentID)
             draftMessage = ""
             replyTo = nil
-            await refreshGridData()
-            await refreshProfile()
-            await refreshHeatmapData()
+
+            if parentID == nil {
+                gridMessages.insert(posted, at: 0)
+            } else {
+                gridMessages.append(posted)
+            }
+            profileMessages.insert(posted, at: 0)
+
+            let localCellID = cell.id.split(separator: "_").first.map(String.init) ?? ""
+            if !localCellID.isEmpty {
+                heatmapCounts[localCellID, default: 0] += 1
+            }
+
+            Task {
+                await refreshGridData()
+                await refreshProfile()
+                await refreshHeatmapData()
+            }
         } catch {
             statusMessage = userFacingErrorMessage(error)
         }
@@ -373,6 +405,7 @@ struct ContentView: View {
                             viewModel.beginAuthFlow()
                             return
                         }
+                        guard !viewModel.enforceUsernameSetupIfNeeded() else { return }
                         showingProfile = true
                     }
                     .disabled(viewModel.currentCoordinate == nil)
@@ -388,6 +421,7 @@ struct ContentView: View {
                         viewModel.beginAuthFlow()
                         return
                     }
+                    guard !viewModel.enforceUsernameSetupIfNeeded() else { return }
                     showingGridChat = true
                 }
                     .disabled(viewModel.currentCoordinate == nil)
@@ -714,6 +748,10 @@ struct CloseToolbarButton: ToolbarContent {
 struct GridChatSheet: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
+    @State private var collapsedMessageIDs: Set<UUID> = []
+    @State private var continuationRoot: ChatMessage?
+
+    private let maxInlineDepth = 3
 
     var body: some View {
         NavigationStack {
@@ -721,29 +759,7 @@ struct GridChatSheet: View {
                 ScrollView {
                     LazyVStack(spacing: 10) {
                         ForEach(viewModel.topLevelMessages) { message in
-                            VStack(alignment: .leading, spacing: 8) {
-                                CommentCard(
-                                    message: message,
-                                    canDelete: viewModel.activeUser?.id == message.authorID,
-                                    likeAction: { Task { await viewModel.like(message) } },
-                                    replyAction: {
-                                        viewModel.replyTo = message
-                                        viewModel.draftMessage = "@\(message.author) "
-                                    },
-                                    deleteAction: { Task { await viewModel.delete(message) } }
-                                )
-
-                                ForEach(viewModel.replies(for: message.id)) { reply in
-                                    CommentCard(
-                                        message: reply,
-                                        canDelete: viewModel.activeUser?.id == reply.authorID,
-                                        likeAction: { Task { await viewModel.like(reply) } },
-                                        replyAction: {},
-                                        deleteAction: { Task { await viewModel.delete(reply) } }
-                                    )
-                                    .padding(.leading, 18)
-                                }
-                            }
+                            threadView(for: message, depth: 0)
                         }
 
                         if viewModel.gridMessages.isEmpty {
@@ -756,56 +772,151 @@ struct GridChatSheet: View {
                     .padding(.top, 8)
                 }
 
-                VStack(spacing: 8) {
-                    if let reply = viewModel.replyTo {
-                        HStack {
-                            Text("Replying to @\(reply.author)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                            Button("Cancel") {
-                                viewModel.replyTo = nil
-                                viewModel.draftMessage = ""
-                            }
-                            .font(.caption)
-                        }
-                        .padding(.horizontal)
-                    }
-
-                    HStack(spacing: 10) {
-                        TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
-                            .lineLimit(1...4)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 12)
-                            .background(Color.white)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke(Color.black.opacity(0.15), lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                        Button("Post") { Task { await viewModel.postMessage() } }
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .background(Color.black)
-                            .clipShape(Capsule())
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-                }
-                .background(Color.white)
+                composer
             }
             .background(Color.white)
             .toolbar {
                 CloseToolbarButton { dismiss() }
+            }
+            .sheet(item: $continuationRoot) { root in
+                ThreadContinuationView(viewModel: viewModel, root: root)
             }
         }
         .task {
             await viewModel.refreshGridData()
             await viewModel.refreshHeatmapData()
         }
+    }
+
+        private func threadView(for message: ChatMessage, depth: Int) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 8) {
+            CommentCard(
+                message: message,
+                canDelete: viewModel.activeUser?.id == message.authorID,
+                likeAction: { Task { await viewModel.like(message) } },
+                replyAction: {
+                    viewModel.replyTo = message
+                    viewModel.draftMessage = "@\(message.author) "
+                },
+                deleteAction: { Task { await viewModel.delete(message) } },
+                isCollapsed: collapsedMessageIDs.contains(message.id),
+                collapseAction: {
+                    if collapsedMessageIDs.contains(message.id) {
+                        collapsedMessageIDs.remove(message.id)
+                    } else {
+                        collapsedMessageIDs.insert(message.id)
+                    }
+                },
+                showCollapseToggle: !viewModel.replies(for: message.id).isEmpty
+            )
+
+            if !collapsedMessageIDs.contains(message.id) {
+                let children = viewModel.replies(for: message.id)
+                if depth >= maxInlineDepth, !children.isEmpty {
+                    Button("Continue this thread (\(children.count) replies)") {
+                        continuationRoot = message
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+                    .padding(.leading, 14)
+                } else {
+                    ForEach(children) { child in
+                        threadView(for: child, depth: depth + 1)
+                            .padding(.leading, 14)
+                    }
+                }
+            }
+        })
+    }
+
+    private var composer: some View {
+        VStack(spacing: 8) {
+            if let reply = viewModel.replyTo {
+                HStack {
+                    Text("Replying to @\(reply.author)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Cancel") {
+                        viewModel.replyTo = nil
+                        viewModel.draftMessage = ""
+                    }
+                    .font(.caption)
+                }
+                .padding(.horizontal)
+            }
+
+            HStack(spacing: 10) {
+                TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
+                    .lineLimit(1...4)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                Button("Post") { Task { await viewModel.postMessage() } }
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .background(Color.black)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 10)
+        }
+        .background(Color.white)
+    }
+}
+
+struct ThreadContinuationView: View {
+    @ObservedObject var viewModel: AppViewModel
+    let root: ChatMessage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    continuationThread(for: root)
+                }
+                .padding(16)
+            }
+            .background(Color.white)
+            .navigationTitle("Thread")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                CloseToolbarButton { dismiss() }
+            }
+        }
+    }
+
+        private func continuationThread(for message: ChatMessage) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 8) {
+            CommentCard(
+                message: message,
+                canDelete: viewModel.activeUser?.id == message.authorID,
+                likeAction: { Task { await viewModel.like(message) } },
+                replyAction: {
+                    viewModel.replyTo = message
+                    dismiss()
+                },
+                deleteAction: { Task { await viewModel.delete(message) } },
+                isCollapsed: false,
+                collapseAction: {},
+                showCollapseToggle: false
+            )
+
+            ForEach(viewModel.replies(for: message.id)) { child in
+                continuationThread(for: child)
+                    .padding(.leading, 14)
+            }
+        })
     }
 }
 
@@ -815,6 +926,9 @@ struct CommentCard: View {
     let likeAction: () -> Void
     let replyAction: () -> Void
     let deleteAction: () -> Void
+    let isCollapsed: Bool
+    let collapseAction: () -> Void
+    let showCollapseToggle: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -832,8 +946,13 @@ struct CommentCard: View {
                 .foregroundStyle(.black)
                 .disabled(message.userHasLiked)
 
-                if message.parentID == nil {
-                    Button("Reply", action: replyAction)
+                Button("Reply", action: replyAction)
+                    .font(.caption)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.black)
+
+                if showCollapseToggle {
+                    Button(isCollapsed ? "Expand" : "Collapse", action: collapseAction)
                         .font(.caption)
                         .buttonStyle(.plain)
                         .foregroundStyle(.black)
