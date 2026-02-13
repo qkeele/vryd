@@ -30,6 +30,25 @@ final class AppViewModel: ObservableObject {
         case ready
     }
 
+    enum TopLevelSortOption: String, CaseIterable, Identifiable {
+        case likes
+        case newest
+        case oldest
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .likes:
+                return "Top"
+            case .newest:
+                return "Newest"
+            case .oldest:
+                return "Oldest"
+            }
+        }
+    }
+
     @Published var screen: Screen = .main
     @Published var statusMessage = ""
     @Published var usernameDraft = ""
@@ -43,6 +62,7 @@ final class AppViewModel: ObservableObject {
     @Published var profileMessages: [ChatMessage] = []
     @Published var draftMessage = ""
     @Published var replyTo: ChatMessage?
+    @Published var topLevelSort: TopLevelSortOption = .likes
     @Published var heatmapCounts: [String: Int] = [:]
 
     let backend: VrydBackend
@@ -105,8 +125,46 @@ final class AppViewModel: ObservableObject {
         gridMessages.filter { $0.parentID == nil }
     }
 
+    var sortedTopLevelMessages: [ChatMessage] {
+        switch topLevelSort {
+        case .likes:
+            return topLevelMessages.sorted {
+                if $0.likeCount == $1.likeCount {
+                    return $0.createdAt > $1.createdAt
+                }
+                return $0.likeCount > $1.likeCount
+            }
+        case .newest:
+            return topLevelMessages.sorted { $0.createdAt > $1.createdAt }
+        case .oldest:
+            return topLevelMessages.sorted { $0.createdAt < $1.createdAt }
+        }
+    }
+
     func replies(for parentID: UUID) -> [ChatMessage] {
         gridMessages.filter { $0.parentID == parentID }.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func flattenedReplies(for topLevelID: UUID) -> [ChatMessage] {
+        let byID = Dictionary(uniqueKeysWithValues: gridMessages.map { ($0.id, $0) })
+        return gridMessages
+            .filter { message in
+                guard message.id != topLevelID else { return false }
+                return rootID(for: message, byID: byID) == topLevelID
+            }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    func replyCount(for topLevelID: UUID) -> Int {
+        flattenedReplies(for: topLevelID).count
+    }
+
+    private func rootID(for message: ChatMessage, byID: [UUID: ChatMessage]) -> UUID? {
+        var current: ChatMessage? = message
+        while let parentID = current?.parentID {
+            current = byID[parentID]
+        }
+        return current?.id
     }
 
     func signInWithApple(idToken: String, nonce: String) async {
@@ -748,28 +806,56 @@ struct CloseToolbarButton: ToolbarContent {
 struct GridChatSheet: View {
     @ObservedObject var viewModel: AppViewModel
     @Environment(\.dismiss) private var dismiss
-    @State private var collapsedMessageIDs: Set<UUID> = []
-    @State private var continuationRoot: ChatMessage?
+    @State private var visibleReplyCountByThread: [UUID: Int] = [:]
+    @State private var activeThreadIndex = 0
 
-    private let maxInlineDepth = 3
+    private let replyPageSize = 10
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 12) {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(viewModel.topLevelMessages) { message in
-                            threadView(for: message, depth: 0)
-                        }
+            VStack(spacing: 8) {
+                Picker("Sort", selection: $viewModel.topLevelSort) {
+                    ForEach(AppViewModel.TopLevelSortOption.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
 
-                        if viewModel.gridMessages.isEmpty {
-                            Text("Nothing to see here yet.")
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 16)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(viewModel.sortedTopLevelMessages) { message in
+                                threadCard(for: message)
+                                    .id(message.id)
+                            }
+
+                            if viewModel.gridMessages.isEmpty {
+                                Text("Nothing to see here yet.")
+                                    .foregroundStyle(.secondary)
+                                    .padding(.top, 16)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 6)
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if viewModel.sortedTopLevelMessages.count > 1 {
+                            Button {
+                                jumpToNextThread(using: proxy)
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                    .frame(width: 40, height: 40)
+                                    .background(Color.black)
+                                    .clipShape(Circle())
+                            }
+                            .padding(.trailing, 20)
+                            .padding(.bottom, 12)
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
                 }
 
                 composer
@@ -778,9 +864,6 @@ struct GridChatSheet: View {
             .toolbar {
                 CloseToolbarButton { dismiss() }
             }
-            .sheet(item: $continuationRoot) { root in
-                ThreadContinuationView(viewModel: viewModel, root: root)
-            }
         }
         .task {
             await viewModel.refreshGridData()
@@ -788,53 +871,81 @@ struct GridChatSheet: View {
         }
     }
 
-        private func threadView(for message: ChatMessage, depth: Int) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 8) {
-            CommentCard(
-                message: message,
-                canDelete: viewModel.activeUser?.id == message.authorID,
-                likeAction: { Task { await viewModel.like(message) } },
+    private func threadCard(for topLevel: ChatMessage) -> some View {
+        let replies = viewModel.flattenedReplies(for: topLevel.id)
+        let visibleCount = visibleReplyCount(for: topLevel.id, total: replies.count)
+        let visibleReplies = Array(replies.prefix(visibleCount))
+
+        return VStack(alignment: .leading, spacing: 10) {
+            FlatCommentRow(
+                message: topLevel,
+                canDelete: viewModel.activeUser?.id == topLevel.authorID,
+                likeAction: { Task { await viewModel.like(topLevel) } },
                 replyAction: {
-                    viewModel.replyTo = message
-                    viewModel.draftMessage = "@\(message.author) "
+                    viewModel.replyTo = topLevel
+                    viewModel.draftMessage = "@\(resolvedAuthorName(for: topLevel)) "
                 },
-                deleteAction: { Task { await viewModel.delete(message) } },
-                isCollapsed: collapsedMessageIDs.contains(message.id),
-                collapseAction: {
-                    if collapsedMessageIDs.contains(message.id) {
-                        collapsedMessageIDs.remove(message.id)
-                    } else {
-                        collapsedMessageIDs.insert(message.id)
-                    }
-                },
-                showCollapseToggle: !viewModel.replies(for: message.id).isEmpty
+                deleteAction: { Task { await viewModel.delete(topLevel) } },
+                showReplyCount: replies.count
             )
 
-            if !collapsedMessageIDs.contains(message.id) {
-                let children = viewModel.replies(for: message.id)
-                if depth >= maxInlineDepth, !children.isEmpty {
-                    Button("Continue this thread (\(children.count) replies)") {
-                        continuationRoot = message
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
-                    .padding(.leading, 14)
-                } else {
-                    ForEach(children) { child in
-                        threadView(for: child, depth: depth + 1)
-                            .padding(.leading, 14)
+            if !visibleReplies.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(visibleReplies) { reply in
+                        FlatCommentRow(
+                            message: reply,
+                            canDelete: viewModel.activeUser?.id == reply.authorID,
+                            likeAction: { Task { await viewModel.like(reply) } },
+                            replyAction: {
+                                viewModel.replyTo = topLevel
+                                viewModel.draftMessage = "@\(resolvedAuthorName(for: reply)) "
+                            },
+                            deleteAction: { Task { await viewModel.delete(reply) } },
+                            showReplyCount: nil,
+                            isReply: true
+                        )
                     }
                 }
             }
-        })
+
+            if replies.count > visibleCount {
+                Button("See \(replies.count - visibleCount) more replies") {
+                    visibleReplyCountByThread[topLevel.id] = min(replies.count, visibleCount + replyPageSize)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(Color.black.opacity(0.03))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func visibleReplyCount(for threadID: UUID, total: Int) -> Int {
+        let initial = min(replyPageSize, total)
+        return min(total, visibleReplyCountByThread[threadID] ?? initial)
+    }
+
+    private func jumpToNextThread(using proxy: ScrollViewProxy) {
+        let threads = viewModel.sortedTopLevelMessages
+        guard !threads.isEmpty else { return }
+        activeThreadIndex = (activeThreadIndex + 1) % threads.count
+        withAnimation(.easeInOut) {
+            proxy.scrollTo(threads[activeThreadIndex].id, anchor: .top)
+        }
+    }
+
+    private func resolvedAuthorName(for message: ChatMessage) -> String {
+        let trimmed = message.author.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "unknown" ? "deleted" : trimmed
     }
 
     private var composer: some View {
         VStack(spacing: 8) {
             if let reply = viewModel.replyTo {
                 HStack {
-                    Text("Replying to @\(reply.author)")
+                    Text("Replying to @\(resolvedAuthorName(for: reply))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -874,66 +985,35 @@ struct GridChatSheet: View {
     }
 }
 
-struct ThreadContinuationView: View {
-    @ObservedObject var viewModel: AppViewModel
-    let root: ChatMessage
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
-                    continuationThread(for: root)
-                }
-                .padding(16)
-            }
-            .background(Color.white)
-            .navigationTitle("Thread")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                CloseToolbarButton { dismiss() }
-            }
-        }
-    }
-
-        private func continuationThread(for message: ChatMessage) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 8) {
-            CommentCard(
-                message: message,
-                canDelete: viewModel.activeUser?.id == message.authorID,
-                likeAction: { Task { await viewModel.like(message) } },
-                replyAction: {
-                    viewModel.replyTo = message
-                    dismiss()
-                },
-                deleteAction: { Task { await viewModel.delete(message) } },
-                isCollapsed: false,
-                collapseAction: {},
-                showCollapseToggle: false
-            )
-
-            ForEach(viewModel.replies(for: message.id)) { child in
-                continuationThread(for: child)
-                    .padding(.leading, 14)
-            }
-        })
-    }
-}
-
-struct CommentCard: View {
+struct FlatCommentRow: View {
     let message: ChatMessage
     let canDelete: Bool
     let likeAction: () -> Void
     let replyAction: () -> Void
     let deleteAction: () -> Void
-    let isCollapsed: Bool
-    let collapseAction: () -> Void
-    let showCollapseToggle: Bool
+    let showReplyCount: Int?
+    var isReply = false
+
+    private var authorLabel: String {
+        let trimmed = message.author.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty || trimmed == "unknown" ? "[deleted]" : "@\(trimmed)"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text(authorLabel)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
             Text(message.text)
                 .foregroundStyle(.black)
+
+            if let showReplyCount {
+                Text("\(showReplyCount) repl\(showReplyCount == 1 ? "y" : "ies")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack(spacing: 14) {
                 Text(message.createdAt.formatted(date: .omitted, time: .shortened))
                     .font(.caption)
@@ -951,13 +1031,6 @@ struct CommentCard: View {
                     .buttonStyle(.plain)
                     .foregroundStyle(.black)
 
-                if showCollapseToggle {
-                    Button(isCollapsed ? "Expand" : "Collapse", action: collapseAction)
-                        .font(.caption)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.black)
-                }
-
                 Spacer()
 
                 if canDelete {
@@ -969,13 +1042,7 @@ struct CommentCard: View {
             }
             .font(.caption)
         }
-        .padding(14)
-        .background(Color.white)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.black.opacity(0.12), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.leading, isReply ? 6 : 0)
     }
 }
 

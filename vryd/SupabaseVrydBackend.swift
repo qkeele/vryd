@@ -287,7 +287,7 @@ private struct ProfileNameContainer: Decodable {
 
 private struct MessageRow: Decodable {
     let id: UUID
-    let authorID: UUID
+    let authorID: UUID?
     let text: String
     let gridCellID: String
     let parentID: UUID?
@@ -305,7 +305,7 @@ private struct MessageRow: Decodable {
     }
 
     func asChatMessage(userHasLiked: Bool, likeCount: Int) -> ChatMessage {
-        let resolvedAuthor = profiles?.username ?? "unknown"
+        let resolvedAuthor = profiles?.username ?? "[deleted]"
         return ChatMessage(
             id: id,
             authorID: authorID,
