@@ -205,10 +205,26 @@ create policy "likes_delete_self"
   using (auth.uid() = user_id);
 
 -- =========================================================
--- Grants
+-- View
 -- =========================================================
 
-grant usage on schema public to authenticated;
+create or replace view public.messages_with_meta as
+select
+  m.id,
+  m.author_id,
+  p.username as author,
+  m.text,
+  m.grid_cell_id,
+  m.parent_id,
+  m.created_at,
+  coalesce(count(ml.user_id), 0)::int as like_count
+from public.messages m
+join public.profiles p on p.id = m.author_id
+left join public.message_likes ml on ml.message_id = m.id
+group by m.id, p.username;
+
+grant usage on schema public to anon, authenticated;
+grant select on public.messages_with_meta to anon, authenticated;
 grant select, insert, update, delete on public.profiles to authenticated;
 grant select, insert, update, delete on public.messages to authenticated;
 grant select, insert, delete on public.message_likes to authenticated;
