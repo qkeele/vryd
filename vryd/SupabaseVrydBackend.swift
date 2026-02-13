@@ -10,6 +10,10 @@ actor SupabaseVrydBackend: VrydBackend {
         self.client = client
     }
 
+    func currentUserProfile() async throws -> UserProfile? {
+        guard let authUser = client.auth.currentUser else { return nil }
+        return try await fetchProfile(id: authUser.id)
+    }
     func signInWithApple(idToken: String, nonce: String) async throws -> UserProfile {
         _ = try await client.auth.signInWithIdToken(
             credentials: OpenIDConnectCredentials(
@@ -79,7 +83,7 @@ actor SupabaseVrydBackend: VrydBackend {
     func fetchMessages(in cell: GridCell, viewerID: UUID) async throws -> [ChatMessage] {
         let rows: [MessageRow] = try await client
             .from("messages")
-            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!inner(username)")
+            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!messages_author_id_fkey(username)")
             .eq("grid_cell_id", value: cell.id)
             .order("created_at", ascending: false)
             .execute()
@@ -105,7 +109,7 @@ actor SupabaseVrydBackend: VrydBackend {
     func fetchProfileMessages(for userID: UUID) async throws -> [ChatMessage] {
         let rows: [MessageRow] = try await client
             .from("messages")
-            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!inner(username)")
+            .select("id, author_id, text, grid_cell_id, parent_id, created_at, profiles!messages_author_id_fkey(username)")
             .eq("author_id", value: userID.uuidString)
             .order("created_at", ascending: false)
             .execute()

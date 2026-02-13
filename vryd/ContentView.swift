@@ -12,9 +12,16 @@ final class AppViewModel: ObservableObject {
         case main
     }
 
-    enum AuthFlowStep {
-        case username
-        case appleSignIn
+    enum AuthFlowStep: Equatable {
+        case signIn
+        case usernameSetup
+    }
+
+    enum UsernameAvailability: Equatable {
+        case idle
+        case checking
+        case available
+        case unavailable
     }
 
     enum LocationGateState {
@@ -26,7 +33,9 @@ final class AppViewModel: ObservableObject {
     @Published var screen: Screen = .main
     @Published var statusMessage = ""
     @Published var usernameDraft = ""
-    @Published var authFlowStep: AuthFlowStep = .username
+    @Published var authFlowStep: AuthFlowStep = .signIn
+    @Published var usernameAvailability: UsernameAvailability = .idle
+    @Published var authBusy = false
     @Published var showingAuthFlow = false
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var locationState: LocationGateState = .idle
@@ -40,6 +49,7 @@ final class AppViewModel: ObservableObject {
     let locationManager = LocationManager()
     private(set) var activeUser: UserProfile?
     private var lastLoadedCellID: String?
+    private var usernameCheckTask: Task<Void, Never>?
 
     var displayUsername: String {
         let trimmed = activeUser?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -86,51 +96,92 @@ final class AppViewModel: ObservableObject {
     }
 
     func signInWithApple(idToken: String, nonce: String) async {
-        let desiredUsername = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard UsernameRules.isValid(desiredUsername) else {
-            statusMessage = UsernameRules.helperText
-            return
-        }
+        authBusy = true
+        defer { authBusy = false }
 
         do {
-            guard try await backend.isUsernameAvailable(desiredUsername) else {
-                statusMessage = BackendError.usernameTaken.localizedDescription
-                return
-            }
-
             let user = try await backend.signInWithApple(idToken: idToken, nonce: nonce)
-            let updated = try await backend.updateUsername(userID: user.id, username: desiredUsername)
-            activeUser = updated
-            showingAuthFlow = false
-            authFlowStep = .username
-            statusMessage = ""
+            activeUser = user
+            if user.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                authFlowStep = .usernameSetup
+                statusMessage = "Choose a username to finish creating your account."
+                await validateUsernameAvailability()
+            } else {
+                showingAuthFlow = false
+                authFlowStep = .signIn
+                statusMessage = ""
+                await refreshProfile()
+                await refreshGridData()
+            }
         } catch {
             statusMessage = userFacingErrorMessage(error)
         }
     }
 
-    func continueToAppleStep() async {
+    func completeUsernameSetup() async {
+        guard let user = activeUser else { return }
         let trimmed = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard UsernameRules.isValid(trimmed) else {
+            statusMessage = UsernameRules.helperText
+            usernameAvailability = .unavailable
+            return
+        }
+
+        authBusy = true
+        defer { authBusy = false }
+
+        do {
+            let updated = try await backend.updateUsername(userID: user.id, username: trimmed)
+            activeUser = updated
+            showingAuthFlow = false
+            authFlowStep = .signIn
+            statusMessage = ""
+            await refreshProfile()
+            await refreshGridData()
+        } catch {
+            statusMessage = userFacingErrorMessage(error)
+            usernameAvailability = .unavailable
+        }
+    }
+
+    func handleUsernameDraftChanged() {
+        usernameCheckTask?.cancel()
+        usernameCheckTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            await self?.validateUsernameAvailability()
+        }
+    }
+
+    func validateUsernameAvailability() async {
+        let trimmed = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            usernameAvailability = .idle
+            statusMessage = ""
+            return
+        }
+
+        guard UsernameRules.isValid(trimmed) else {
+            usernameAvailability = .unavailable
             statusMessage = UsernameRules.helperText
             return
         }
 
+        usernameAvailability = .checking
         do {
-            guard try await backend.isUsernameAvailable(trimmed) else {
-                statusMessage = BackendError.usernameTaken.localizedDescription
-                return
-            }
-            statusMessage = ""
-            authFlowStep = .appleSignIn
+            let available = try await backend.isUsernameAvailable(trimmed)
+            usernameAvailability = available ? .available : .unavailable
+            statusMessage = available ? "" : BackendError.usernameTaken.localizedDescription
         } catch {
+            usernameAvailability = .idle
             statusMessage = userFacingErrorMessage(error)
         }
     }
 
     func beginAuthFlow() {
         statusMessage = ""
-        authFlowStep = .username
+        authFlowStep = .signIn
+        usernameAvailability = .idle
         showingAuthFlow = true
     }
 
@@ -227,6 +278,15 @@ final class AppViewModel: ObservableObject {
 
     func bootstrap() {
         requestLocation()
+        Task {
+            do {
+                if let user = try await backend.currentUserProfile() {
+                    activeUser = user
+                }
+            } catch {
+                statusMessage = userFacingErrorMessage(error)
+            }
+        }
     }
 
     private func userFacingErrorMessage(_ error: Error) -> String {
@@ -360,59 +420,74 @@ struct AuthOnboardingFlowView: View {
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Set up your account")
-                    .font(.title.bold())
+                if viewModel.authFlowStep == .signIn {
+                    Text("Sign in")
+                        .font(.title.bold())
 
-                Text("Choose a username to continue.")
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 10) {
-                    TextField("username", text: $viewModel.usernameDraft)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 12)
-                        .background(Color.white)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(Color.black.opacity(0.15), lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                    Text(UsernameRules.helperText)
-                        .font(.footnote)
+                    Text("Use Apple to sign in to your existing account, or continue to create one.")
                         .foregroundStyle(.secondary)
 
-                    if viewModel.authFlowStep == .username {
-                        Button("Continue") { Task { await viewModel.continueToAppleStep() } }
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.black)
-                            .foregroundStyle(.white)
-                            .clipShape(Capsule())
-                            .disabled(!UsernameRules.isValid(viewModel.usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)))
-                    } else {
-                        Text("Username locked in: @\(viewModel.usernameDraft)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    SignInWithAppleButton(.signIn, onRequest: { request in
+                        AppleSignInCoordinator.configure(request: request)
+                    }, onCompletion: { result in
+                        Task { await AppleSignInCoordinator.handle(result: result, viewModel: viewModel) }
+                    })
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 50)
+                    .disabled(viewModel.authBusy)
+                } else {
+                    Text("Choose a username")
+                        .font(.title.bold())
 
-                        SignInWithAppleButton(.signIn, onRequest: { request in
-                            AppleSignInCoordinator.configure(request: request)
-                        }, onCompletion: { result in
-                            Task { await AppleSignInCoordinator.handle(result: result, viewModel: viewModel) }
-                        })
-                        .signInWithAppleButtonStyle(.black)
-                        .frame(height: 50)
+                    Text("This is only needed once for new accounts.")
+                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField("username", text: $viewModel.usernameDraft)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(Color.white)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(Color.black.opacity(0.15), lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .onChange(of: viewModel.usernameDraft) { _, _ in
+                                viewModel.handleUsernameDraftChanged()
+                            }
+
+                        HStack(spacing: 8) {
+                            UsernameAvailabilityIndicator(state: viewModel.usernameAvailability)
+                            Text(UsernameRules.helperText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Button(action: { Task { await viewModel.completeUsernameSetup() } }) {
+                            HStack {
+                                Spacer()
+                                Text(viewModel.authBusy ? "Saving..." : "Continue")
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                Spacer()
+                            }
+                            .padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                        .background(Color.black)
+                        .clipShape(Capsule())
+                        .disabled(viewModel.authBusy || viewModel.usernameAvailability != .available)
                     }
+                    .padding(16)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color.black.opacity(0.12), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 }
-                .padding(16)
-                .background(Color.white)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.black.opacity(0.12), lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
 
                 if !viewModel.statusMessage.isEmpty {
                     Text(viewModel.statusMessage)
@@ -427,6 +502,27 @@ struct AuthOnboardingFlowView: View {
             .toolbar {
                 CloseToolbarButton { dismiss() }
             }
+        }
+    }
+}
+
+struct UsernameAvailabilityIndicator: View {
+    let state: AppViewModel.UsernameAvailability
+
+    var body: some View {
+        switch state {
+        case .idle:
+            Image(systemName: "minus.circle")
+                .foregroundStyle(.secondary)
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
+        case .available:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .unavailable:
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.red)
         }
     }
 }
