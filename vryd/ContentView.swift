@@ -2,6 +2,9 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import Combine
+import AuthenticationServices
+import CryptoKit
+import Security
 
 @MainActor
 final class AppViewModel: ObservableObject {
@@ -82,7 +85,7 @@ final class AppViewModel: ObservableObject {
         gridMessages.filter { $0.parentID == parentID }.sorted { $0.createdAt < $1.createdAt }
     }
 
-    func signInWithApple() async {
+    func signInWithApple(idToken: String, nonce: String) async {
         let desiredUsername = usernameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard UsernameRules.isValid(desiredUsername) else {
             statusMessage = UsernameRules.helperText
@@ -95,7 +98,7 @@ final class AppViewModel: ObservableObject {
                 return
             }
 
-            let user = try await backend.signInWithApple()
+            let user = try await backend.signInWithApple(idToken: idToken, nonce: nonce)
             let updated = try await backend.updateUsername(userID: user.id, username: desiredUsername)
             activeUser = updated
             showingAuthFlow = false
@@ -394,15 +397,13 @@ struct AuthOnboardingFlowView: View {
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
-                        Button(action: { Task { await viewModel.signInWithApple() } }) {
-                            Label("Sign in with Apple", systemImage: "apple.logo")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 14)
-                                .background(Color.black)
-                                .foregroundStyle(.white)
-                                .clipShape(Capsule())
-                        }
+                        SignInWithAppleButton(.signIn, onRequest: { request in
+                            AppleSignInCoordinator.configure(request: request)
+                        }, onCompletion: { result in
+                            Task { await AppleSignInCoordinator.handle(result: result, viewModel: viewModel) }
+                        })
+                        .signInWithAppleButtonStyle(.black)
+                        .frame(height: 50)
                     }
                 }
                 .padding(16)
@@ -428,6 +429,75 @@ struct AuthOnboardingFlowView: View {
             }
         }
     }
+}
+
+private enum AppleSignInCoordinator {
+    static func configure(request: ASAuthorizationAppleIDRequest) {
+        let rawNonce = randomNonceString()
+        AppleSignInState.shared.currentNonce = rawNonce
+        request.requestedScopes = [.fullName, .email]
+        request.nonce = sha256(rawNonce)
+    }
+
+    @MainActor
+    static func handle(result: Result<ASAuthorization, Error>, viewModel: AppViewModel) async {
+        switch result {
+        case .failure(let error):
+            viewModel.statusMessage = error.localizedDescription
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                viewModel.statusMessage = "Invalid Apple sign-in response."
+                return
+            }
+
+            guard
+                let nonce = AppleSignInState.shared.currentNonce,
+                let tokenData = credential.identityToken,
+                let idToken = String(data: tokenData, encoding: .utf8)
+            else {
+                viewModel.statusMessage = "Missing Apple identity token."
+                return
+            }
+
+            await viewModel.signInWithApple(idToken: idToken, nonce: nonce)
+            AppleSignInState.shared.currentNonce = nil
+        }
+    }
+
+    private static func sha256(_ input: String) -> String {
+        let inputData = Data(input.utf8)
+        let hashed = SHA256.hash(data: inputData)
+        return hashed.compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remainingLength = length
+
+        while remainingLength > 0 {
+            var random: UInt8 = 0
+            let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+            guard status == errSecSuccess else {
+                fatalError("Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(status)")
+            }
+
+            if Int(random) < charset.count {
+                result.append(charset[Int(random)])
+                remainingLength -= 1
+            }
+        }
+
+        return result
+    }
+}
+
+private final class AppleSignInState {
+    static let shared = AppleSignInState()
+    var currentNonce: String?
+
+    private init() {}
 }
 
 struct LocationPromptView: View {
