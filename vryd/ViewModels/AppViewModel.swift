@@ -2,9 +2,6 @@ import SwiftUI
 import MapKit
 import CoreLocation
 import Combine
-import AuthenticationServices
-import CryptoKit
-import Security
 
 @MainActor
 /// Central app state and async workflows for auth, location, and messaging.
@@ -443,5 +440,3 @@ final class LocationManager: NSObject, CLLocationManagerDelegate {
         onLocation?(location.coordinate)
     }
 }
-
-@MainActor
