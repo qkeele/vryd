@@ -763,7 +763,7 @@ struct GridChatSheet: View {
                         }
 
                         if viewModel.gridMessages.isEmpty {
-                            Text("No comments in this square yet.")
+                            Text("Nothing to see here yet.")
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 16)
                         }
@@ -848,7 +848,7 @@ struct GridChatSheet: View {
             }
 
             HStack(spacing: 10) {
-                TextField("Write a comment…", text: $viewModel.draftMessage, axis: .vertical)
+                TextField("Write a message…", text: $viewModel.draftMessage, axis: .vertical)
                     .lineLimit(1...4)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 12)
@@ -999,11 +999,11 @@ struct ProfileView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Your comments")
+                        Text("Your messages")
                             .font(.headline)
 
                         if viewModel.profileMessages.isEmpty {
-                            Text("You haven’t posted any comments yet.")
+                            Text("Nothing to see here yet.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -1056,7 +1056,7 @@ struct ProfileView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This removes your account, your comments, and your likes.")
+                Text("This removes your account, your messages, and your likes.")
             }
         }
     }
